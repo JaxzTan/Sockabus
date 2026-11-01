@@ -112,6 +112,13 @@ jobs:
           echo "SOCKABUS_E2E_LLM=fake" >> "$GITHUB_ENV"
           echo "SOCKABUS_E2E_PSQL=docker compose exec -T postgres psql -U buru -d buru" >> "$GITHUB_ENV"
 
+      # Schema first: with the Telegram connector on, the app reads honeypot_accounts at startup.
+      - name: Start PostgreSQL, migrate and seed
+        run: |
+          docker compose up -d --wait postgres
+          docker compose --profile tools run --rm migrate
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U buru -d buru < db/seed/001_demo.sql
+
       - name: Start the Compose stack
         run: docker compose --profile app up -d --build --wait postgres redis temporal app web
 
@@ -123,11 +130,6 @@ jobs:
           done
           echo "stack did not become ready in 120 s" >&2
           exit 1
-
-      - name: Migrate and seed
-        run: |
-          docker compose --profile tools run --rm migrate
-          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U buru -d buru < db/seed/001_demo.sql
 
       - uses: pnpm/action-setup@v4
         with:
