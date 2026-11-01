@@ -54,7 +54,8 @@ func TestNormalizeValue(t *testing.T) {
 }
 
 func TestBankOrChain(t *testing.T) {
-	if BankOrChain("wallet", "TRON") != "tron" || BankOrChain("wallet", "ETH") != "ethereum" || BankOrChain("bank_account", "mbb") != "MBB" || BankOrChain("url", "") != "" {
+	if BankOrChain("wallet", "TRON") != "TRON" || BankOrChain("wallet", "eth") != "ETHEREUM" || BankOrChain("bank_account", "mbb") != "MBB" ||
+		BankOrChain("handle", "telegram") != "TELEGRAM" || BankOrChain("url", "") != "" {
 		t.Error("BankOrChain mapping")
 	}
 }

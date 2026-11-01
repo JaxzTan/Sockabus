@@ -83,7 +83,9 @@ jobs:
       - name: Write CI .env
         run: |
           token=$(openssl rand -hex 24)
+          console_pw=$(openssl rand -hex 16)
           echo "::add-mask::$token"
+          echo "::add-mask::$console_pw"
           cat > .env <<EOF
           SOCKABUS_ENV=ci
           SOCKABUS_MODE=live
@@ -97,9 +99,18 @@ jobs:
           SOCKABUS_REPLY_READ_MIN=1s
           SOCKABUS_REPLY_READ_MAX=2s
           SOCKABUS_TYPING_CPS=200
-          SOCKABUS_CONSOLE_AUTH=off
+          SOCKABUS_TEMPORAL_TASK_QUEUE=sockabus-e2e
+          SOCKABUS_TG_APP_ID=1
+          SOCKABUS_TG_APP_HASH=ci-no-sessions
+          SOCKABUS_CONSOLE_USER=e2e-operator
+          SOCKABUS_CONSOLE_PASSWORD=$console_pw
           EOF
+          # Connector on with no session files (nothing connects); console sign-in on, as in production.
           echo "SOCKABUS_OPERATOR_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "SOCKABUS_CONSOLE_USER=e2e-operator" >> "$GITHUB_ENV"
+          echo "SOCKABUS_CONSOLE_PASSWORD=$console_pw" >> "$GITHUB_ENV"
+          echo "SOCKABUS_E2E_LLM=fake" >> "$GITHUB_ENV"
+          echo "SOCKABUS_E2E_PSQL=docker compose exec -T postgres psql -U buru -d buru" >> "$GITHUB_ENV"
 
       - name: Start the Compose stack
         run: docker compose --profile app up -d --build --wait postgres redis temporal app web
@@ -107,7 +118,7 @@ jobs:
       - name: Wait for /readyz and the console
         run: |
           for i in $(seq 1 60); do
-            curl -fsS "$SOCKABUS_API_URL/readyz" && curl -fsS -o /dev/null "$SOCKABUS_WEB_URL/demo/chat" && exit 0
+            curl -fsS "$SOCKABUS_API_URL/readyz" && curl -fsS -o /dev/null "$SOCKABUS_WEB_URL/sign-in" && exit 0
             sleep 2
           done
           echo "stack did not become ready in 120 s" >&2
@@ -143,6 +154,7 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            tests/results/
             compose.log
           retention-days: 14
 

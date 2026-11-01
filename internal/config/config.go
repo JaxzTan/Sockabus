@@ -27,8 +27,11 @@ type Live struct {
 	OperatorToken string // bearer token for /internal/* until operator login exists (TRD §7)
 	OperatorID    int64  // operators.id recorded on operator actions
 	MessageKey    string // base64 AES-256 key for message bodies (TR-14)
+	// PlaintextIdentifiers: also write scammer identifiers in clear (migration 000012 phase 1, default on).
+	// SOCKABUS_IDENTIFIER_PLAINTEXT=0 before applying db/migrations-pending/*_drop_plaintext_identifiers.
+	PlaintextIdentifiers bool
 
-	LLMProvider     string // gemini (default) | anthropic | fake (offline, CI) | none
+	LLMProvider     string // anthropic (default) | gemini | fake (offline, CI) | none
 	GeminiAPIKey    string
 	AnthropicAPIKey string
 	PersonaModel    string
@@ -43,17 +46,23 @@ type Live struct {
 	TelegramSystem     string
 	TelegramTestDC     int    // 1-3 = Telegram test network (development only); 0 = production
 	TelegramKumaPush   string // Uptime Kuma push URL for the connector heartbeat; empty = off
+	// TelegramPersistState stores gotd update state in telegram_update_state (G-9) so a restart
+	// replays missed messages. Off by default until it has run on a test account.
+	TelegramPersistState bool
 
 	// SimEnabled turns on the local chat simulator (cmd/simchat). Default: on when SOCKABUS_ENV=local.
 	SimEnabled bool
 
 	LLMTimeout    time.Duration // per persona reply; falls back to the playbook line when exceeded
 	LLMTryTimeout time.Duration // per attempt; a stalled call is retried within LLMTimeout
-	ReplyDelayMin time.Duration // FR-3 floor; below 10 s only outside prod (CI and tests)
-	ReplyReadMin  time.Duration
-	ReplyReadMax  time.Duration
-	TypingCPS     float64
-	Inactivity    time.Duration
+	// PersonaGenTimeout is the per-attempt limit for persona generation (POST /internal/personas/generate)
+	// and AI summaries: long structured outputs, so not the chat reply limit. 2 attempts.
+	PersonaGenTimeout time.Duration
+	ReplyDelayMin     time.Duration // FR-3 floor; below 10 s only outside prod (CI and tests)
+	ReplyReadMin      time.Duration
+	ReplyReadMax      time.Duration
+	TypingCPS         float64
+	Inactivity        time.Duration
 }
 
 func Load() (Config, error) {
@@ -82,7 +91,7 @@ func Load() (Config, error) {
 	l := Live{
 		OperatorToken:      os.Getenv("SOCKABUS_OPERATOR_TOKEN"),
 		MessageKey:         os.Getenv("SOCKABUS_MESSAGE_KEY"),
-		LLMProvider:        strings.ToLower(getenv("SOCKABUS_LLM_PROVIDER", "gemini")),
+		LLMProvider:        strings.ToLower(getenv("SOCKABUS_LLM_PROVIDER", "anthropic")),
 		GeminiAPIKey:       os.Getenv("GEMINI_API_KEY"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		PersonaModel:       os.Getenv("SOCKABUS_PERSONA_MODEL"),
@@ -102,6 +111,18 @@ func Load() (Config, error) {
 	}
 	if l.TelegramTestDC, err = atoiEnv("SOCKABUS_TG_TEST_DC", 0); err != nil {
 		return c, err
+	}
+	switch strings.ToLower(os.Getenv("SOCKABUS_TG_PERSIST_STATE")) {
+	case "1", "true", "on":
+		l.TelegramPersistState = true
+	}
+	switch strings.ToLower(os.Getenv("SOCKABUS_IDENTIFIER_PLAINTEXT")) {
+	case "0", "false", "off":
+		l.PlaintextIdentifiers = false
+	case "", "1", "true", "on":
+		l.PlaintextIdentifiers = true
+	default:
+		return c, fmt.Errorf("SOCKABUS_IDENTIFIER_PLAINTEXT must be 1 or 0")
 	}
 	switch strings.ToLower(os.Getenv("SOCKABUS_SIM")) {
 	case "1", "true", "on":
@@ -141,6 +162,9 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if l.LLMTryTimeout, err = durEnv("SOCKABUS_LLM_TRY_TIMEOUT", 14*time.Second); err != nil {
+		return c, err
+	}
+	if l.PersonaGenTimeout, err = durEnv("SOCKABUS_PERSONA_GEN_TIMEOUT", 90*time.Second); err != nil {
 		return c, err
 	}
 	if l.TypingCPS, err = floatEnv("SOCKABUS_TYPING_CPS", 3.5); err != nil {

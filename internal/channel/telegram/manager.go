@@ -42,6 +42,12 @@ type Config struct {
 	// account is connected (TR-20). Kuma alerts when the pushes stop.
 	KumaPushURL string
 	Log         *slog.Logger
+	// Health, when set, is called on connector events (TRD G-10): connected, disconnected,
+	// unauthorized, banned. It must not block for long (the caller records it best effort).
+	Health func(ctx context.Context, accountID int64, event string, detail map[string]any)
+	// State, when set, returns the persistent update state for an account (TRD G-9). Nil keeps
+	// gotd's in-memory state (messages sent while the app is down are not replayed).
+	State func(accountID int64) updates.StateStorage
 }
 
 // Account is the subset of honeypot_accounts the connector needs.
@@ -169,12 +175,18 @@ func (m *Manager) runLoop(ctx context.Context, c *conn, sessionPath string) {
 			return
 		}
 		if errors.Is(err, errUnauthorized) || tgerr.Is(err, "AUTH_KEY_UNREGISTERED", "SESSION_REVOKED", "USER_DEACTIVATED", "USER_DEACTIVATED_BAN", "AUTH_KEY_DUPLICATED") {
+			event := "unauthorized"
+			if tgerr.Is(err, "USER_DEACTIVATED", "USER_DEACTIVATED_BAN") {
+				event = "banned"
+			}
+			m.health(ctx, c.acct.ID, event, map[string]any{"error": err.Error()})
 			lg.Error("telegram account stopped: re-login needed or account banned", "err", err)
 			m.mu.Lock()
 			delete(m.conns, c.acct.ID)
 			m.mu.Unlock()
 			return
 		}
+		m.health(ctx, c.acct.ID, "disconnected", map[string]any{"error": errText(err), "retry_in_s": int(backoff.Seconds())})
 		lg.Warn("telegram connection lost, reconnecting", "err", err, "in", backoff)
 		select {
 		case <-ctx.Done():
@@ -187,7 +199,11 @@ func (m *Manager) runLoop(ctx context.Context, c *conn, sessionPath string) {
 
 func (m *Manager) runOnce(ctx context.Context, c *conn, sessionPath string, lg *slog.Logger) error {
 	dispatcher := tg.NewUpdateDispatcher()
-	gaps := updates.New(updates.Config{Handler: dispatcher, UserAccessHasher: c.hashes})
+	ucfg := updates.Config{Handler: dispatcher, UserAccessHasher: c.hashes}
+	if m.cfg.State != nil {
+		ucfg.Storage = m.cfg.State(c.acct.ID)
+	}
+	gaps := updates.New(ucfg)
 	opts := telegram.Options{
 		SessionStorage: &session.FileStorage{Path: sessionPath},
 		UpdateHandler:  gaps,
@@ -217,8 +233,23 @@ func (m *Manager) runOnce(ctx context.Context, c *conn, sessionPath string, lg *
 		defer stopHeartbeat() // stop pushing as soon as this connection ends
 		go m.heartbeat(hbCtx, lg)
 		lg.Info("telegram account connected", "user_id", status.User.ID, "username", status.User.Username)
+		m.health(ctx, c.acct.ID, "connected", map[string]any{"user_id": status.User.ID})
 		return gaps.Run(ctx, client.API(), status.User.ID, updates.AuthOptions{})
 	})
+}
+
+// health reports a connector event to Config.Health, if set.
+func (m *Manager) health(ctx context.Context, accountID int64, event string, detail map[string]any) {
+	if m.cfg.Health != nil {
+		m.cfg.Health(ctx, accountID, event, detail)
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // heartbeatEvery is the Uptime Kuma push interval (TR-20: alert within 2 min = 60 s + 1 retry).

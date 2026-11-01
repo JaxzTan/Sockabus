@@ -43,6 +43,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+*.env
 !.env.example
 
 # vercel
@@ -62,3 +63,7 @@ gallery
 /playwright-report/
 /test-results/
 /blob-report/
+/tests/results/
+
+# Playwright test stack state (scripts/e2e-stack.sh)
+/.e2e/

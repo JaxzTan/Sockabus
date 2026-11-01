@@ -133,18 +133,21 @@ func Level(score float64) string {
 	return "low"
 }
 
-// BankOrChain converts a Found.Bank value to what is stored in entities.bank_or_chain: bank codes
-// as-is (MBB, CIMB...), chains as the chain enum spelling (tron, ethereum). Empty means NULL.
+// BankOrChain converts a Found.Bank value to what is stored in entities.bank_or_chain. It is the
+// single normalisation point for every write and lookup: always UPPER CASE (bank codes MBB, CIMB;
+// chains TRON, ETHEREUM; a handle's channel TELEGRAM). Empty means NULL. Rows written before this
+// rule may be lower case; queries compare upper(bank_or_chain), so they still match.
 func BankOrChain(typ, bank string) string {
+	b := strings.ToUpper(strings.TrimSpace(bank))
 	if typ == "wallet" {
-		switch strings.ToUpper(bank) {
+		switch b {
 		case "TRON", "TRX", "TRC20":
-			return "tron"
+			return "TRON"
 		case "ETH", "ETHEREUM", "ERC20":
-			return "ethereum"
+			return "ETHEREUM"
 		}
 	}
-	return strings.ToUpper(strings.TrimSpace(bank))
+	return b
 }
 
 // NormalizeValue normalises a value the same way Extract does, so lookups (POST /v1/lookup)

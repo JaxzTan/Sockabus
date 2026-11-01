@@ -57,13 +57,20 @@ func (a *Activities) ProcessInbound(ctx context.Context, in workflows.ProcessInb
 	if err != nil {
 		return workflows.ProcessInboundResult{}, err
 	}
-	pm, err := s.decrypt(m)
+	conv, err := s.conversation(ctx, in.ConversationID)
 	if err != nil {
 		return workflows.ProcessInboundResult{}, err
 	}
-	conv, err := s.Q.GetConversation(ctx, in.ConversationID)
+	pm, err := s.decrypt(m)
 	if err != nil {
-		return workflows.ProcessInboundResult{}, err
+		// Never retried and never sent to the extraction LLM: the text cannot be recovered. The
+		// conversation keeps its stage; the console shows the message as undecryptable.
+		s.Log.Error("inbound message could not be decrypted; skipping extraction", "conversation_id", conv.ID, "message_id", m.ID, "err", err)
+		scam := ""
+		if conv.ScamType.Valid {
+			scam = string(conv.ScamType.ScamType)
+		}
+		return workflows.ProcessInboundResult{Stage: conv.Stage, ScamType: scam}, nil
 	}
 	acct, err := s.Q.GetHoneypotAccount(ctx, conv.AccountID)
 	if err != nil {
@@ -91,8 +98,8 @@ func (a *Activities) ProcessInbound(ctx context.Context, in workflows.ProcessInb
 	err = pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
 		q := s.Q.WithTx(tx)
 		if m.ID == firstID { // the scammer's own handle is intelligence too (FR-6), once per conversation
-			if v, ok := extraction.NormalizeValue("handle", conv.ScammerHandle); ok {
-				isNew, err := recordEntity(ctx, q, "handle", v, string(acct.Channel), "low", conv.ID, m.ID)
+			if v, ok := extraction.NormalizeValue("handle", conv.ScammerHandle.String); conv.ScammerHandle.Valid && ok {
+				isNew, err := recordEntity(ctx, q, "handle", v, extraction.BankOrChain("handle", string(acct.Channel)), "low", conv.ID, m.ID)
 				if err != nil {
 					return err
 				}
@@ -126,9 +133,10 @@ func (a *Activities) ProcessInbound(ctx context.Context, in workflows.ProcessInb
 	})
 	stageChanged := next != conv.Stage
 	if stageChanged {
-		if err := s.Q.SetConversationStage(ctx, db.SetConversationStageParams{ID: conv.ID, Stage: next}); err != nil {
+		if err := s.setStage(ctx, conv, next, StageSourceBot); err != nil {
 			return workflows.ProcessInboundResult{}, err
 		}
+		conv.Stage = next
 	}
 
 	scam := ""
@@ -147,6 +155,14 @@ func (a *Activities) ProcessInbound(ctx context.Context, in workflows.ProcessInb
 			scam = label
 		}
 	}
+	// AI summary refresh (TR-7): on every stage change and every SummaryEveryN scammer messages.
+	// Runs in the background so it never delays the reply; no workflow change (no replay risk).
+	switch {
+	case stageChanged:
+		s.RefreshConversationSummaryAsync(conv.ID, "stage_change")
+	case count > 0 && count%SummaryEveryN == 0:
+		s.RefreshConversationSummaryAsync(conv.ID, "every_n")
+	}
 	return workflows.ProcessInboundResult{Stage: next, ScamType: scam, NewEntities: newEntities}, nil
 }
 
@@ -160,6 +176,7 @@ func recordEntity(ctx context.Context, q *db.Queries, typ, value, bankOrChain, l
 	if level != "low" && level != "medium" {
 		level = "low" // extraction can never set "high" (FR-9)
 	}
+	bankOrChain = extraction.BankOrChain(typ, bankOrChain) // idempotent; guarantees UPPER CASE on every write
 	boc := pgtype.Text{String: bankOrChain, Valid: bankOrChain != ""}
 	e, err := q.UpsertEntity(ctx, db.UpsertEntityParams{Type: et, ValueNormalized: value, BankOrChain: boc, Confidence: db.ConfidenceLevel(level)})
 	if err != nil {
@@ -178,7 +195,7 @@ func (a *Activities) classify(ctx context.Context, convID int64) (string, error)
 		return "", err
 	}
 	var scammer []string
-	for _, m := range hist {
+	for _, m := range readable(hist) {
 		if m.SenderType == string(db.SenderTypeScammer) {
 			scammer = append(scammer, m.Text)
 		}
@@ -206,9 +223,7 @@ func (a *Activities) setScamType(ctx context.Context, conv db.Conversation, pers
 			pb = pgtype.Int8{Int64: p.ID, Valid: true}
 		}
 	}
-	if err := q.SetConversationScamType(ctx, db.SetConversationScamTypeParams{
-		ID: conv.ID, ScamType: db.NullScamType{ScamType: db.ScamType(label), Valid: true},
-	}); err != nil {
+	if err := a.S.setScamTypeRow(ctx, conv, db.NullScamType{ScamType: db.ScamType(label), Valid: true}, StageSourceClassifier); err != nil {
 		return err
 	}
 	if pb == conv.PlaybookID {
@@ -251,6 +266,7 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 	if err != nil {
 		return workflows.GenerateReplyResult{}, err
 	}
+	hist = readable(hist) // undecryptable messages never reach the persona LLM
 	if len(hist) == 0 || hist[len(hist)-1].Direction != string(db.MessageDirectionInbound) {
 		return workflows.GenerateReplyResult{Source: "none"}, nil // nothing new to answer
 	}
@@ -393,9 +409,12 @@ func (a *Activities) CloseConversation(ctx context.Context, in workflows.CloseIn
 }
 
 func (a *Activities) target(ctx context.Context, convID int64) (db.Conversation, db.HoneypotAccount, gateway.Sender, error) {
-	conv, err := a.S.Q.GetConversation(ctx, convID)
+	conv, err := a.S.conversation(ctx, convID)
 	if err != nil {
 		return conv, db.HoneypotAccount{}, nil, err
+	}
+	if !conv.ScammerPeerRef.Valid {
+		return conv, db.HoneypotAccount{}, nil, fmt.Errorf("conversation %d: scammer reply address is unavailable (not decryptable)", conv.ID)
 	}
 	acct, err := a.S.Q.GetHoneypotAccount(ctx, conv.AccountID)
 	if err != nil {

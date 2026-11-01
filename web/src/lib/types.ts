@@ -42,6 +42,7 @@ export interface Message {
   text: string;
   t: string;
   at?: number; // ms when sent, when known (API messages and ones sent in this browser)
+  undecryptable?: boolean; // stored ciphertext could not be decrypted; shown as a muted placeholder
 }
 
 export interface Conversation {

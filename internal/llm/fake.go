@@ -14,6 +14,8 @@ import (
 //   - extraction ("extract scam intelligence") → no extra entities; the regex extractor still runs
 //   - classification ("Classify a scam conversation") → "other", so the keyword classifier decides
 //   - persona generator ("## Endpoint mode") → valid personas, named from a hash of the input
+//   - AI summaries ("intelligence analyst for Sockabus") → a fixed sentence plus the input's
+//     first lines, so the summary is about the data it was given
 //
 // Everything else is a persona reply, picked from a fixed list by the scammer's latest message.
 type Fake struct{}
@@ -37,6 +39,8 @@ func (Fake) Generate(_ context.Context, req Request) (string, error) {
 		return `{"label":"other"}`, nil
 	case strings.Contains(req.System, "## Endpoint mode"):
 		return fakePersonas(last)
+	case strings.Contains(req.System, "intelligence analyst for Sockabus"):
+		return fakeSummary(last), nil
 	}
 	return fakeReplies[hash(last)%uint32(len(fakeReplies))], nil
 }
@@ -103,6 +107,16 @@ func fakePersonas(input string) (string, error) {
 	}
 	b, err := json.Marshal(out)
 	return string(b), err
+}
+
+// fakeSummary is an offline stand-in for an AI summary: a fixed lead sentence plus the input
+// (which already names the persona, phase, scam type and the transcript), cut to a few hundred chars.
+func fakeSummary(input string) string {
+	flat := strings.Join(strings.Fields(input), " ")
+	if r := []rune(flat); len(r) > 600 {
+		flat = string(r[:600]) + "…"
+	}
+	return "Offline summary (fake LLM, no model call). " + flat
 }
 
 // letters turns n into a short all-letter tag, so generated names never contain digits.

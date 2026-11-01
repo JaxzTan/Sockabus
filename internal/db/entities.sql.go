@@ -13,12 +13,14 @@ import (
 )
 
 const entityScamTypes = `-- name: EntityScamTypes :many
+
 SELECT DISTINCT c.scam_type::scam_type AS scam_type
 FROM entity_sightings s
 JOIN conversations c ON c.id = s.conversation_id
 WHERE s.entity_id = $1 AND c.scam_type IS NOT NULL
 `
 
+// lookup policy A, see LookupEntity
 func (q *Queries) EntityScamTypes(ctx context.Context, entityID int64) ([]ScamType, error) {
 	rows, err := q.db.Query(ctx, entityScamTypes, entityID)
 	if err != nil {
@@ -336,8 +338,8 @@ JOIN (
     SELECT unnest($1::text[])::entity_type AS type,
            unnest($2::text[]) AS value,
            unnest($3::text[]) AS bank -- '' = no bank/chain
-) AS q ON e.type = q.type AND e.value_normalized = q.value AND e.bank_or_chain IS NOT DISTINCT FROM NULLIF(q.bank, '')
-WHERE e.status <> 'rejected'
+) AS q ON e.type = q.type AND e.value_normalized = q.value AND upper(e.bank_or_chain) IS NOT DISTINCT FROM upper(NULLIF(q.bank, ''))
+WHERE (e.status = 'verified' OR (e.type NOT IN ('bank_account', 'wallet') AND e.status <> 'rejected'))
 `
 
 type LookupEntitiesBatchParams struct {
@@ -379,8 +381,13 @@ func (q *Queries) LookupEntitiesBatch(ctx context.Context, arg LookupEntitiesBat
 
 const lookupEntity = `-- name: LookupEntity :one
 SELECT id, type, value_normalized, bank_or_chain, confidence, status, sightings_count, first_seen, last_seen FROM entities
-WHERE type = $1 AND value_normalized = $2 AND bank_or_chain IS NOT DISTINCT FROM $3
-  AND status <> 'rejected'
+WHERE type = $1 AND value_normalized = $2
+  AND upper(bank_or_chain) IS NOT DISTINCT FROM upper($3::text)
+  -- Lookup policy A: bank accounts and wallets (what banks freeze on) match only once an operator
+  -- has verified them; phones, URLs and handles also match while unverified (status is returned).
+  AND (status = 'verified' OR (type NOT IN ('bank_account', 'wallet') AND status <> 'rejected'))
+ORDER BY (status = 'verified') DESC, id
+LIMIT 1
 `
 
 type LookupEntityParams struct {
@@ -389,7 +396,8 @@ type LookupEntityParams struct {
 	BankOrChain     pgtype.Text `json:"bank_or_chain"`
 }
 
-// Lookup API fallback when Redis misses (TR-10). Rejected entities never match.
+// Lookup API fallback when Redis misses (TR-10). Rejected entities never match. bank_or_chain is
+// compared case-insensitively: rows written before the upper-case rule may be lower case.
 func (q *Queries) LookupEntity(ctx context.Context, arg LookupEntityParams) (Entity, error) {
 	row := q.db.QueryRow(ctx, lookupEntity, arg.Type, arg.ValueNormalized, arg.BankOrChain)
 	var i Entity
@@ -409,15 +417,31 @@ func (q *Queries) LookupEntity(ctx context.Context, arg LookupEntityParams) (Ent
 
 const upsertEntity = `-- name: UpsertEntity :one
 
-INSERT INTO entities (type, value_normalized, bank_or_chain, confidence, first_seen, last_seen)
-VALUES (
-    $1, $2, $3,
-    LEAST($4::confidence_level, 'medium'), now(), now()
+WITH existing AS (
+    SELECT e.id FROM entities e
+    WHERE e.type = $1 AND e.value_normalized = $2
+      AND upper(e.bank_or_chain) IS NOT DISTINCT FROM upper($3::text)
+    ORDER BY e.id
+    LIMIT 1
+), updated AS (
+    UPDATE entities
+    SET last_seen = now(),
+        confidence = GREATEST(entities.confidence, LEAST($4::confidence_level, 'medium'))
+    WHERE entities.id = (SELECT id FROM existing)
+    RETURNING entities.id, entities.type, entities.value_normalized, entities.bank_or_chain, entities.confidence, entities.status, entities.sightings_count, entities.first_seen, entities.last_seen
+), inserted AS (
+    INSERT INTO entities (type, value_normalized, bank_or_chain, confidence, first_seen, last_seen)
+    SELECT $1, $2, $3,
+           LEAST($4::confidence_level, 'medium'), now(), now()
+    WHERE NOT EXISTS (SELECT 1 FROM existing)
+    ON CONFLICT ON CONSTRAINT uq_entity DO UPDATE
+    SET last_seen = now(),
+        confidence = GREATEST(entities.confidence, LEAST(EXCLUDED.confidence, 'medium'))
+    RETURNING entities.id, entities.type, entities.value_normalized, entities.bank_or_chain, entities.confidence, entities.status, entities.sightings_count, entities.first_seen, entities.last_seen
 )
-ON CONFLICT ON CONSTRAINT uq_entity DO UPDATE
-SET last_seen = now(),
-    confidence = GREATEST(entities.confidence, LEAST(EXCLUDED.confidence, 'medium'))
-RETURNING id, type, value_normalized, bank_or_chain, confidence, status, sightings_count, first_seen, last_seen
+SELECT id, type, value_normalized, bank_or_chain, confidence, status, sightings_count, first_seen, last_seen FROM updated
+UNION ALL
+SELECT id, type, value_normalized, bank_or_chain, confidence, status, sightings_count, first_seen, last_seen FROM inserted
 `
 
 type UpsertEntityParams struct {
@@ -427,17 +451,32 @@ type UpsertEntityParams struct {
 	Confidence      ConfidenceLevel `json:"confidence"`
 }
 
+type UpsertEntityRow struct {
+	ID              int64           `json:"id"`
+	Type            EntityType      `json:"type"`
+	ValueNormalized string          `json:"value_normalized"`
+	BankOrChain     pgtype.Text     `json:"bank_or_chain"`
+	Confidence      ConfidenceLevel `json:"confidence"`
+	Status          EntityStatus    `json:"status"`
+	SightingsCount  int32           `json:"sightings_count"`
+	FirstSeen       time.Time       `json:"first_seen"`
+	LastSeen        time.Time       `json:"last_seen"`
+}
+
 // Entities, sightings, verifications and chain transfers (FR-6, FR-8, FR-9, FR-10, FR-11; TR-6, TR-8, TR-9, TR-10).
 // entity_sightings and verifications are append-only.
-// Dedupe on uq_entity (TR-6). Confidence only rises, and extraction can never set 'high' (FR-9).
-func (q *Queries) UpsertEntity(ctx context.Context, arg UpsertEntityParams) (Entity, error) {
+// Dedupe on (type, value_normalized, upper(bank_or_chain)) (TR-6). New rows are written upper case;
+// older lower-case rows ('telegram', 'tron') are matched case-insensitively and reused, never
+// rewritten, so no duplicate entity appears for the same handle/wallet. Confidence only rises, and
+// extraction can never set 'high' (FR-9). The ON CONFLICT covers two concurrent first sightings.
+func (q *Queries) UpsertEntity(ctx context.Context, arg UpsertEntityParams) (UpsertEntityRow, error) {
 	row := q.db.QueryRow(ctx, upsertEntity,
 		arg.Type,
 		arg.ValueNormalized,
 		arg.BankOrChain,
 		arg.Confidence,
 	)
-	var i Entity
+	var i UpsertEntityRow
 	err := row.Scan(
 		&i.ID,
 		&i.Type,

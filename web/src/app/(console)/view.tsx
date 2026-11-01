@@ -1,8 +1,8 @@
 "use client";
 // Dashboard (/), laid out like the design (docs/front-end/sockabus-console, gallery/dashboard.png).
-// Built only from what store.ts already polls: no extra API calls, and every number is counted from
-// that data. The design's "AI summary" card is kept as a layout, but filled with fixed sentence
-// templates over real data: nothing here is written by a model.
+// Built from what store.ts already polls; every number is counted from that data. The "Summary ·
+// today" card adds the AI overview from GET /internal/summary (written by Claude on the Go side) above
+// the counted lines.
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Avatar, Badge, Chip, Head, Spin, type Tone } from "@/components/ui";
@@ -11,6 +11,7 @@ import { isSimAccount } from "@/lib/api";
 import { BANKS, plural, showVal, STAGES, typeLabel } from "@/lib/format";
 import { DEV_CHAT, useAgo } from "@/lib/hooks";
 import { activePersonas, decide, liveConvos, queueOf, USE_SAMPLE, useStore, type Health, type State } from "@/lib/store";
+import { summaryTime, useAISummary } from "@/lib/summary";
 import type { Conversation, Entity, EntityType, Persona } from "@/lib/types";
 
 const STUCK_MS = 2 * 60 * 60 * 1000; // no message for 2 h on an open chat
@@ -214,9 +215,11 @@ function ActiveChats({ st, live, stuck }: { st: State; live: Conversation[]; stu
   );
 }
 
-// The design's "AI summary · today" card, filled with real data and fixed sentences only.
+// The design's "AI summary · today" card: the AI overview (GET /internal/summary) plus stats and lines
+// counted from real data.
 function Today({ st }: { st: State }) {
   const { data, ui } = st;
+  const ai = useAISummary(USE_SAMPLE ? null : "/internal/summary");
   const ref = ui.lastSync || 0;
   const today = (ms?: number) => ms !== undefined && ref > 0 && sameDay(ms, ref);
 
@@ -289,6 +292,29 @@ function Today({ st }: { st: State }) {
           ))}
         </div>
       )}
+      {!USE_SAMPLE && (
+        <div className="today-what" data-testid="overview-ai-summary" aria-busy={ai.loading}>
+          <span className="caps muted">AI summary</span>
+          {ai.summary ? (
+            <p data-testid="overview-ai-summary-text">{ai.summary.summary}</p>
+          ) : ai.loading ? (
+            <span className="muted">
+              <Spin /> Writing today&apos;s summary…
+            </span>
+          ) : (
+            <span className="muted">{ai.error ? `AI summary unavailable: ${ai.error}` : "No summary yet."}</span>
+          )}
+          {ai.summary && (
+            <small className="muted" data-testid="overview-ai-summary-meta">
+              {ai.summary.model.replace(/^anthropic\//, "")} · {summaryTime(ai.summary.created_at)}
+              {ai.loading ? " · updating…" : ""}{" "}
+              <button type="button" className="btn btn-quiet btn-sm" onClick={ai.regenerate} disabled={ai.loading}>
+                Refresh
+              </button>
+            </small>
+          )}
+        </div>
+      )}
       <div className="today-what">
         <span className="caps muted">What happened</span>
         {lines.length ? (
@@ -304,7 +330,7 @@ function Today({ st }: { st: State }) {
           <span className="muted">Nothing yet today.</span>
         )}
       </div>
-      <small className="muted">Counted from today&apos;s chats and captures. Fixed sentences, nothing written by AI.</small>
+      <small className="muted">AI summary written by Claude from the live chats; the stats and lines below are counted from today&apos;s chats and captures.</small>
     </Panel>
   );
 }

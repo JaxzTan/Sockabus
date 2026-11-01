@@ -3,15 +3,24 @@
 -- migration 000004 (scammer_peer_ref, dedupe_key, personas.profile/demo_identifiers).
 
 -- name: FindOpenConversationByPeer :one
--- Routes an inbound message to its open conversation by channel reply address (FR-2).
+-- Routes an inbound message to its open conversation by channel reply address (FR-2). Matches the
+-- keyed blind index (000012); rows not yet backfilled (bidx NULL) fall back to the plaintext column.
 SELECT * FROM conversations
-WHERE account_id = $1 AND scammer_peer_ref = $2 AND status <> 'closed'
+WHERE account_id = sqlc.arg(account_id) AND status <> 'closed'
+  AND (scammer_peer_ref_bidx = sqlc.arg(peer_bidx)::bytea
+       OR (scammer_peer_ref_bidx IS NULL AND scammer_peer_ref = sqlc.arg(peer_ref)::text))
 ORDER BY started_at DESC
 LIMIT 1;
 
 -- name: CreateConversationForPeer :one
-INSERT INTO conversations (account_id, playbook_id, temporal_workflow_id, scammer_handle, scammer_peer_ref, started_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+-- Returns no row when another open conversation for the same (account, peer) won the race
+-- (conversations_open_peer_bidx_uq from 000012, or conversations_open_peer_uq from 000006 while the
+-- plaintext is still written); the caller then re-selects with FindOpenConversationByPeer.
+-- scammer_handle / scammer_peer_ref are NULL once SOCKABUS_IDENTIFIER_PLAINTEXT=0 (phase 2).
+INSERT INTO conversations (account_id, playbook_id, temporal_workflow_id, scammer_handle, scammer_peer_ref, started_at,
+                           scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT DO NOTHING
 RETURNING *;
 
 -- name: SetConversationPlaybook :exec
@@ -66,10 +75,17 @@ WHERE s.conversation_id = $1
 ORDER BY e.id;
 
 -- name: CreatePersonaWithProfile :one
--- Full insert used by the operator API and the persona generator.
+-- Full insert used by the operator API and the persona generator. demo_identifiers is the plaintext
+-- copy (NULL once SOCKABUS_IDENTIFIER_PLAINTEXT=0); the ciphertext is set by SetPersonaDemoIdentifiersCiphertext
+-- in the same transaction, because its AAD needs the new persona id.
 INSERT INTO personas (name, age, language_mix, backstory, wealth_profile, status, profile, demo_identifiers)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
+
+-- name: SetPersonaDemoIdentifiersCiphertext :execrows
+-- Idempotent (backfill-encrypt): never overwrites an existing ciphertext.
+UPDATE personas SET demo_identifiers_ciphertext = $2, demo_identifiers_dek_ref = $3
+WHERE id = $1 AND demo_identifiers_ciphertext IS NULL;
 
 -- name: ListPersonasForDedupe :many
 -- Dedup memory for the persona generator: every persona not retired.
