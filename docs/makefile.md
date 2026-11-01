@@ -22,9 +22,14 @@ Shortcuts for local development. Run every target from the repo root.
 | `make down` | `docker compose down` | Stopping the dependencies. Does not stop `app`/`web` profile containers (see [docker.md](docker.md)) |
 | `make migrate-up` | `migrate -path db/migrations ... up` on `MIGRATE_DB` | After pulling new migrations |
 | `make migrate-down` | `migrate ... down 1` | Undoing the most recent migration |
+| `make db-check` | read-only `scripts/check-migrations.sql` on `MIGRATE_DB` | Before `migrate-up` on Supabase: shows the applied version and rows that would break migration 000005 (all must be 0) |
+| `make app-role` | `scripts/app-role.sh` on `MIGRATE_DB` | Once per database: creates the app login `buru_api` (or gives it a new password) and prints the password |
+| `make seed` | `db/seed/001_demo.sql` on `MIGRATE_DB` | Once after migrating: operator 1, playbooks, demo personas (safe to rerun) |
+| `make backup` / `make restore-test` | `pg_dump` of `MIGRATE_DB` into `backups/`; restore into a throwaway container | Nightly backup; proving a dump restores. The restore never touches Supabase |
 | `make sqlc` | `sqlc generate` then `sqlc vet` | After changing any file in `db/migrations` or `db/queries` |
 | `make run` | `go run ./cmd/sockabus` | Running the Go API on `:8080` |
 | `make web` | `cd web && pnpm dev` | Running the dashboard on `:3000` (proxies `/api/*` to `:8080`) |
+| `make arch` | `open docs/architecture.html` (`xdg-open` on Linux) | Viewing the architecture diagram in the browser |
 | `make test` | `go test -race ./...` | Unit tests. DB tests are skipped |
 | `make test-db` | `go test ./internal/db/` on `MIGRATE_DB` | DB integration tests. Needs migrations applied |
 | `make lint` | `go vet` + golangci-lint | Before opening a PR |
@@ -35,8 +40,11 @@ The Makefile loads `.env` and exports every variable in it. It strips quotes fro
 
 | Target | Database |
 |---|---|
-| `migrate-up`, `migrate-down`, `test-db` | `DATABASE_URL` from `.env` (Supabase owner, `sslmode=require` added if the URL has no query). Local Docker when `DATABASE_URL` is empty |
+| `migrate-up`, `migrate-down`, `test-db`, `db-check`, `app-role`, `seed`, `backup` | `DATABASE_URL` from `.env` (Supabase owner, `sslmode=require` added if the URL has no query). Local Docker when `DATABASE_URL` is empty |
 | `run` | `SOCKABUS_POSTGRES_URL` from `.env` |
+| `test-e2e` | Always local Docker: it writes append-only rows that cannot be deleted |
+
+`db-check`, `app-role`, `seed` and `backup` need no `psql` on the host: `scripts/pg.sh` runs the PostgreSQL 17 client from Docker.
 
 `test-db` writes inside transactions that are rolled back, so nothing is kept, but it still runs on whatever database `DATABASE_URL` points at.
 

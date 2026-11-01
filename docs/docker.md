@@ -9,7 +9,7 @@ Docker runs the local development stack and, for v1.0, the production stack on o
 | `docker-compose.yml` | Local stack: 3 dependencies + 2 app containers + `migrate` tool |
 | `docker-compose.prod.yml` | Prod overlay: Caddy, Uptime Kuma, persistent Temporal, no public database ports |
 | `Caddyfile` | HTTPS reverse proxy for `SOCKABUS_DOMAIN` |
-| `scripts/backup.sh`, `scripts/restore-test.sh` | Nightly `pg_dump` and restore check |
+| `scripts/backup.sh`, `scripts/restore-test.sh`, `scripts/pg.sh` | Nightly `pg_dump` of Supabase, restore check in a throwaway container, PostgreSQL 17 client in Docker |
 | `Dockerfile` | Go API image (`cmd/sockabus`) |
 | `web/Dockerfile` | Next.js dashboard image |
 | `.dockerignore`, `web/.dockerignore` | Keep `.env`, `.git`, `node_modules` and `.next` out of builds |
