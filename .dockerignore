@@ -12,3 +12,7 @@ coverage.out
 .vscode
 
 backups/
+node_modules
+tests
+playwright-report
+test-results

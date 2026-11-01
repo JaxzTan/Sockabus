@@ -103,3 +103,20 @@ func TestGenerateNoClient(t *testing.T) {
 		t.Fatal("expected error without an LLM")
 	}
 }
+
+func TestGenerateWithFakeLLM(t *testing.T) {
+	now := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	first, _, err := Generate(context.Background(), llm.NewFake(), GenerateRequest{Count: 2}, nil, now, rand.New(rand.NewSource(1)))
+	if err != nil || len(first) != 2 {
+		t.Fatalf("Generate = %d personas, %v", len(first), err)
+	}
+	// The next click sees the first personas as existing, so it must give new names.
+	existing := []Existing{{Name: first[0].Persona.Name}, {Name: first[1].Persona.Name}}
+	next, _, err := Generate(context.Background(), llm.NewFake(), GenerateRequest{Count: 1}, existing, now, rand.New(rand.NewSource(1)))
+	if err != nil || len(next) != 1 {
+		t.Fatalf("second Generate = %d personas, %v", len(next), err)
+	}
+	if n := next[0].Persona.Name; n == first[0].Persona.Name || n == first[1].Persona.Name {
+		t.Fatalf("second click reused name %q", n)
+	}
+}

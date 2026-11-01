@@ -29,6 +29,7 @@ type liveAPI struct {
 	token      string
 	operatorID int64
 	sim        *sim.Hub // development chat simulator; nil when disabled
+	src        StatusSources
 }
 
 func (a *liveAPI) register(mux *http.ServeMux) {
@@ -58,6 +59,8 @@ func (a *liveAPI) register(mux *http.ServeMux) {
 
 	h("GET /internal/entities", a.listEntities)
 	h("POST /internal/entities/{id}/verify", a.verify)
+
+	h("GET /internal/status", a.getStatus)
 
 	if a.sim != nil {
 		h("POST /internal/sim/accounts", a.simAccount)
@@ -121,6 +124,58 @@ func (a *liveAPI) simEvents(w http.ResponseWriter, r *http.Request) {
 		evs = []sim.Event{}
 	}
 	writeJSON(w, http.StatusOK, evs)
+}
+
+// ---- status (NFR-9) ----
+
+// StatusSources feed GET /internal/status. A nil field is reported as absent, not as an error.
+type StatusSources struct {
+	Telegram  TelegramStatus                       // nil when the Telegram connector is disabled
+	LLMErrors func() int                           // failed LLM calls in the recent window
+	Workflows func(context.Context) (int64, error) // running Temporal workflows
+}
+
+// TelegramStatus is implemented by telegram.Manager.
+type TelegramStatus interface {
+	Status() (connected bool, lastMessageAt time.Time)
+}
+
+func (a *liveAPI) getStatus(w http.ResponseWriter, r *http.Request) {
+	var out struct {
+		Telegram struct {
+			Connected     bool       `json:"connected"`
+			LastMessageAt *time.Time `json:"last_message_at"`
+		} `json:"telegram"`
+		LLM struct {
+			ErrorsRecent int `json:"errors_recent"`
+		} `json:"llm"`
+		Workflows struct {
+			Running *int64 `json:"running"`
+			Error   string `json:"error,omitempty"`
+		} `json:"workflows"`
+	}
+	if a.src.Telegram != nil {
+		connected, last := a.src.Telegram.Status()
+		out.Telegram.Connected = connected
+		if !last.IsZero() {
+			out.Telegram.LastMessageAt = &last
+		}
+	}
+	if a.src.LLMErrors != nil {
+		out.LLM.ErrorsRecent = a.src.LLMErrors()
+	}
+	if a.src.Workflows != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		n, err := a.src.Workflows(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("status: cannot count running workflows", "err", err)
+			out.Workflows.Error = "temporal unavailable"
+		} else {
+			out.Workflows.Running = &n
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *liveAPI) auth(next http.HandlerFunc) http.Handler {

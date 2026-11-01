@@ -78,7 +78,7 @@ func Normalize(turns []Turn) []Turn {
 
 // Config selects and configures a provider.
 type Config struct {
-	Provider      string // gemini | anthropic | none
+	Provider      string // gemini | anthropic | fake | none
 	Model         string
 	GeminiKey     string
 	AnthropicKey  string
@@ -99,6 +99,8 @@ func New(cfg Config) (Client, error) {
 			return nil, nil
 		}
 		return NewAnthropic(cfg.AnthropicKey, cfg.Model), nil
+	case "fake":
+		return NewFake(), nil
 	case "none", "off":
 		return nil, nil
 	default:

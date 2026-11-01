@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
@@ -74,7 +75,10 @@ func run(log *slog.Logger) error {
 	w := worker.New(tc, cfg.TemporalTaskQueue, worker.Options{})
 	workflows.Register(w)
 
-	srv := server.New(pool, rdb)
+	srv := server.New(pool, rdb).WithTemporalCheck(func(ctx context.Context) error {
+		_, err := tc.CheckHealth(ctx, &client.CheckHealthRequest{})
+		return err
+	})
 	if cfg.Mode == "live" {
 		if err := wireLive(ctx, cfg, pool, tc, w, srv, log); err != nil {
 			return err
@@ -137,12 +141,18 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 	if extractLLM != nil {
 		extractLLM = llm.Retrying{Inner: extractLLM, Attempts: 2, PerTry: 9 * time.Second, Backoff: 300 * time.Millisecond}
 	}
+	// Calls that still fail after retries show up in GET /internal/status.
+	llmErrors := &llm.ErrorCounter{Window: 15 * time.Minute}
+	personaLLM, extractLLM = llmErrors.Wrap(personaLLM), llmErrors.Wrap(extractLLM)
 
 	honeypot.SetPersonaLLMTimeout(l.LLMTimeout)
 	senders := gateway.NewRegistry()
-	timing := workflows.Timing{ReadMin: l.ReplyReadMin, ReadMax: l.ReplyReadMax, CharsPerSecond: l.TypingCPS, Inactivity: l.Inactivity}
-	if timing.ReadMin < workflows.MinReplyDelay {
-		log.Warn("SOCKABUS_REPLY_READ_MIN below the FR-3 floor; replies still wait at least 10s", "configured", timing.ReadMin)
+	timing := workflows.Timing{MinDelay: l.ReplyDelayMin, ReadMin: l.ReplyReadMin, ReadMax: l.ReplyReadMax, CharsPerSecond: l.TypingCPS, Inactivity: l.Inactivity}
+	if timing.MinDelay < workflows.MinReplyDelay {
+		log.Warn("SOCKABUS_REPLY_DELAY_MIN lowers the FR-3 reply floor below 10s: use only in CI and tests", "floor", timing.MinDelay)
+	}
+	if timing.ReadMin < timing.MinDelay {
+		log.Warn("SOCKABUS_REPLY_READ_MIN below the reply floor; replies still wait for the floor", "configured", timing.ReadMin, "floor", timing.MinDelay)
 	}
 	svc := honeypot.NewService(pool, box, personaLLM, extractLLM, tc, senders,
 		honeypot.Config{TaskQueue: cfg.TemporalTaskQueue, Timing: timing}, log)
@@ -155,6 +165,7 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 	(&honeypot.Activities{S: svc}).Register(w)
 
 	var connect honeypot.AccountConnector
+	var tgStatus server.TelegramStatus
 	if l.TelegramAppID != 0 && l.TelegramAppHash != "" {
 		only := map[string]bool{}
 		for _, h := range l.TelegramOnlyFrom {
@@ -168,11 +179,12 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 			device.SystemVersion = l.TelegramSystem
 		}
 		tgm, err := telegram.NewManager(telegram.Config{AppID: l.TelegramAppID, AppHash: l.TelegramAppHash,
-			SessionDir: l.TelegramSessionDir, Device: device, OnlyFrom: only, TestDC: l.TelegramTestDC, Log: log}, svc)
+			SessionDir: l.TelegramSessionDir, Device: device, OnlyFrom: only, TestDC: l.TelegramTestDC, KumaPushURL: l.TelegramKumaPush, Log: log}, svc)
 		if err != nil {
 			return err
 		}
 		senders.Register(gateway.ChannelTelegram, tgm)
+		tgStatus = tgm
 		connect = func(ctx context.Context, a db.HoneypotAccount) error {
 			if sim.IsSimAccount(a.SessionRef) {
 				return nil // simulated accounts need no connection
@@ -200,6 +212,20 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 	}
 
 	srv.WithLive(svc, connect, l.OperatorToken, l.OperatorID)
+	srv.WithStatus(server.StatusSources{
+		Telegram:  tgStatus,
+		LLMErrors: llmErrors.Recent,
+		Workflows: func(ctx context.Context) (int64, error) {
+			res, err := tc.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
+				Namespace: cfg.TemporalNamespace,
+				Query:     "ExecutionStatus = 'Running'",
+			})
+			if err != nil {
+				return 0, err
+			}
+			return res.GetCount(), nil
+		},
+	})
 	if simHub != nil {
 		srv.WithSim(simHub)
 	}

@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/contrib/middleware/floodwait"
@@ -36,7 +38,10 @@ type Config struct {
 	OnlyFrom map[string]bool
 	// TestDC 1-3 connects to Telegram's test network instead of production (development only).
 	TestDC int
-	Log    *slog.Logger
+	// KumaPushURL, when set, is an Uptime Kuma push monitor URL fetched every 60 s while an
+	// account is connected (TR-20). Kuma alerts when the pushes stop.
+	KumaPushURL string
+	Log         *slog.Logger
 }
 
 // Account is the subset of honeypot_accounts the connector needs.
@@ -55,6 +60,7 @@ type conn struct {
 	ready  chan struct{}
 	once   sync.Once
 	cancel context.CancelFunc
+	online atomic.Bool // true while the MTProto session is authorized and receiving updates
 }
 
 func (c *conn) markReady(api *tg.Client, self int64) {
@@ -69,8 +75,9 @@ type Manager struct {
 	handler gateway.InboundHandler
 	log     *slog.Logger
 
-	mu    sync.Mutex
-	conns map[int64]*conn
+	mu      sync.Mutex
+	conns   map[int64]*conn
+	lastMsg atomic.Int64 // unix nanos of the last routed private message; 0 = none since start
 }
 
 func NewManager(cfg Config, h gateway.InboundHandler) (*Manager, error) {
@@ -132,6 +139,23 @@ func (m *Manager) Stop(accountID int64) {
 	}
 }
 
+// Status reports whether any account is connected and when the last private message was
+// received (zero if none since start). It feeds GET /internal/status (NFR-9).
+func (m *Manager) Status() (connected bool, lastMessageAt time.Time) {
+	m.mu.Lock()
+	for _, c := range m.conns {
+		if c.online.Load() {
+			connected = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if n := m.lastMsg.Load(); n != 0 {
+		lastMessageAt = time.Unix(0, n).UTC()
+	}
+	return connected, lastMessageAt
+}
+
 var errUnauthorized = errors.New("telegram: session is not authorized")
 
 // runLoop keeps one account connected, reconnecting with backoff on network errors.
@@ -187,9 +211,56 @@ func (m *Manager) runOnce(ctx context.Context, c *conn, sessionPath string, lg *
 		}
 		c.gaps = gaps
 		c.markReady(client.API(), status.User.ID)
+		c.online.Store(true)
+		defer c.online.Store(false)
+		hbCtx, stopHeartbeat := context.WithCancel(ctx)
+		defer stopHeartbeat() // stop pushing as soon as this connection ends
+		go m.heartbeat(hbCtx, lg)
 		lg.Info("telegram account connected", "user_id", status.User.ID, "username", status.User.Username)
 		return gaps.Run(ctx, client.API(), status.User.ID, updates.AuthOptions{})
 	})
+}
+
+// heartbeatEvery is the Uptime Kuma push interval (TR-20: alert within 2 min = 60 s + 1 retry).
+var heartbeatEvery = 60 * time.Second
+
+// heartbeat pushes to KumaPushURL now and every heartbeatEvery until ctx ends. A no-op when the
+// URL is unset. The URL carries Kuma's push token, so it is never logged.
+func (m *Manager) heartbeat(ctx context.Context, lg *slog.Logger) {
+	if m.cfg.KumaPushURL == "" {
+		return
+	}
+	push := func() {
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(rctx, http.MethodGet, m.cfg.KumaPushURL, nil)
+		if err != nil {
+			lg.Warn("uptime heartbeat: bad SOCKABUS_KUMA_TG_PUSH_URL")
+			return
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if ctx.Err() == nil {
+				lg.Warn("uptime heartbeat failed", "err", errors.Unwrap(err))
+			}
+			return
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			lg.Warn("uptime heartbeat rejected", "status", res.StatusCode)
+		}
+	}
+	push()
+	t := time.NewTicker(heartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			push()
+		}
+	}
 }
 
 func (m *Manager) onMessage(ctx context.Context, c *conn, e tg.Entities, mc tg.MessageClass, lg *slog.Logger) {
@@ -241,6 +312,7 @@ func (m *Manager) onMessage(ctx context.Context, c *conn, e tg.Entities, mc tg.M
 		return
 	}
 
+	m.lastMsg.Store(time.Now().UnixNano())
 	in := gateway.Inbound{
 		Channel:      gateway.ChannelTelegram,
 		AccountID:    c.acct.ID,

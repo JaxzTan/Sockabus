@@ -28,7 +28,7 @@ type Live struct {
 	OperatorID    int64  // operators.id recorded on operator actions
 	MessageKey    string // base64 AES-256 key for message bodies (TR-14)
 
-	LLMProvider     string // gemini (default) | anthropic | none
+	LLMProvider     string // gemini (default) | anthropic | fake (offline, CI) | none
 	GeminiAPIKey    string
 	AnthropicAPIKey string
 	PersonaModel    string
@@ -41,13 +41,15 @@ type Live struct {
 	TelegramOnlyFrom   []string // optional allowlist while testing: "@handle" or "tg:<user id>"
 	TelegramDevice     string
 	TelegramSystem     string
-	TelegramTestDC     int // 1-3 = Telegram test network (development only); 0 = production
+	TelegramTestDC     int    // 1-3 = Telegram test network (development only); 0 = production
+	TelegramKumaPush   string // Uptime Kuma push URL for the connector heartbeat; empty = off
 
 	// SimEnabled turns on the local chat simulator (cmd/simchat). Default: on when SOCKABUS_ENV=local.
 	SimEnabled bool
 
 	LLMTimeout    time.Duration // per persona reply; falls back to the playbook line when exceeded
 	LLMTryTimeout time.Duration // per attempt; a stalled call is retried within LLMTimeout
+	ReplyDelayMin time.Duration // FR-3 floor; below 10 s only outside prod (CI and tests)
 	ReplyReadMin  time.Duration
 	ReplyReadMax  time.Duration
 	TypingCPS     float64
@@ -90,6 +92,7 @@ func Load() (Config, error) {
 		TelegramSessionDir: getenv("SOCKABUS_TG_SESSION_DIR", ".secrets/telegram"),
 		TelegramDevice:     os.Getenv("SOCKABUS_TG_DEVICE_MODEL"),
 		TelegramSystem:     os.Getenv("SOCKABUS_TG_SYSTEM_VERSION"),
+		TelegramKumaPush:   os.Getenv("SOCKABUS_KUMA_TG_PUSH_URL"),
 	}
 	if l.OperatorID, err = intEnv("SOCKABUS_OPERATOR_ID", 1); err != nil {
 		return c, err
@@ -115,6 +118,15 @@ func Load() (Config, error) {
 			}
 			l.TelegramOnlyFrom = append(l.TelegramOnlyFrom, h)
 		}
+	}
+	if l.ReplyDelayMin, err = durEnv("SOCKABUS_REPLY_DELAY_MIN", 10*time.Second); err != nil {
+		return c, err
+	}
+	if l.ReplyDelayMin < 10*time.Second && c.Env == "prod" {
+		return c, fmt.Errorf("SOCKABUS_REPLY_DELAY_MIN=%v is below the FR-3 floor of 10s; only allowed outside prod", l.ReplyDelayMin)
+	}
+	if l.ReplyDelayMin <= 0 {
+		l.ReplyDelayMin = time.Millisecond // "0" means no floor; a zero Timing.MinDelay would mean the 10 s default
 	}
 	if l.ReplyReadMin, err = durEnv("SOCKABUS_REPLY_READ_MIN", 12*time.Second); err != nil {
 		return c, err

@@ -68,6 +68,13 @@ export interface Health {
   ms: number;
 }
 
+// GET /internal/status (NFR-9): live Telegram connection, recent LLM errors, running workflows.
+export interface BotStatus {
+  telegram: { connected: boolean; last_message_at: string | null };
+  llm: { errors_recent: number };
+  workflows: { running: number | null; error?: string };
+}
+
 interface UI {
   generating: boolean;
   genError: string | null;
@@ -81,6 +88,7 @@ interface UI {
   loadError: string | null; // last API load failed with this message
   accounts: ApiAccount[]; // honeypot accounts (API mode; Status screen)
   health: Health | null;
+  bot: BotStatus | null; // null until loaded, or when /internal/status can't be reached
   justVerified: string | null; // bank account just verified here: drives "Test in bank simulator →"
   saving: Record<string, boolean>; // entity ids whose decision is being sent to the server
   session: SessionStats; // bank simulator, "this demo session" (sessionStorage)
@@ -125,6 +133,7 @@ const freshUI = (lastSync: number): UI => ({
   loadError: null,
   accounts: [],
   health: null,
+  bot: null,
   justVerified: null,
   saving: {},
   session: { lookups: 0, holds: 0 },
@@ -286,8 +295,9 @@ async function pull() {
   }
 }
 
-// GET /readyz: 200 or 503 with { postgres, redis } checks. There is no /internal/status yet.
+// GET /readyz: 200 or 503 with { postgres, redis, temporal } checks; GET /internal/status alongside.
 async function pullHealth() {
+  const botReq = api<BotStatus>("/internal/status").catch(() => null);
   const t0 = performance.now();
   let health: Health;
   try {
@@ -301,7 +311,7 @@ async function pullHealth() {
   } catch {
     health = { ok: false, status: 0, checks: {}, ms: Math.round(performance.now() - t0) };
   }
-  setUI({ health });
+  setUI({ health, bot: await botReq });
 }
 
 let syncStarted = false;

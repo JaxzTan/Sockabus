@@ -146,6 +146,20 @@ func TestHumanModeStillProcessesMessages(t *testing.T) {
 	}
 }
 
+func TestLoweredFloorForCI(t *testing.T) {
+	env, f, start := newEnv(t, "ok")
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(SignalInbound, InboundSignal{MessageID: 1}) }, 0)
+	tm := fastTiming()
+	tm.MinDelay = time.Second
+	env.ExecuteWorkflow(ConversationWorkflow, ConversationInput{ConversationID: 8, Timing: tm})
+	if len(f.sent) != 1 {
+		t.Fatalf("sent = %q", f.sent)
+	}
+	if gap := f.sentAt[0].Sub(start); gap < time.Second || gap >= MinReplyDelay {
+		t.Fatalf("first reply after %v, want between 1 s and %v with MinDelay = 1 s", gap, MinReplyDelay)
+	}
+}
+
 func TestTimingDefaultsClampFloor(t *testing.T) {
 	tm := Timing{ReadMin: 2 * time.Second}.WithDefaults()
 	if tm.ReadMin != MinReplyDelay || tm.ReadMax <= tm.ReadMin {
