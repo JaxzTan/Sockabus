@@ -393,7 +393,7 @@ func (m *Manager) connFor(ctx context.Context, accountID int64) (*conn, error) {
 	c := m.conns[accountID]
 	m.mu.Unlock()
 	if c == nil {
-		return nil, fmt.Errorf("telegram: account %d is not connected", accountID)
+		return nil, fmt.Errorf("telegram: account %d: %w", accountID, gateway.ErrNotConnected)
 	}
 	select {
 	case <-c.ready:
