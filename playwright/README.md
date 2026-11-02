@@ -1,13 +1,17 @@
 # Playwright tests (TRD §9)
 
+Everything Playwright lives in this folder: config (`playwright.config.ts`), specs (`api/`, `ui/`), `helpers.ts`, and
+the outputs (`results/`, `playwright-report/`, `test-results/`, all git-ignored). The `@playwright/test` dependency
+stays in the root `package.json`; `pnpm test:e2e` passes `-c playwright/playwright.config.ts`.
+
 | Spec | What it covers |
 |---|---|
-| `tests/api/endpoints.spec.ts` | One test per HTTP route: `/healthz`, `/readyz` (server.go), every route in `internal/server/live.go` (incl. `/internal/sim/*`, `/internal/status`, `/v1/lookup`) and the console routes in `web/src/app/api/**/route.ts`. Status codes, 401 without/with a wrong token or session, response shape, 400/404 paths. |
-| `tests/api/journeys.spec.ts` | a. persona generation · b. Telegram accounts/connect/chat · c. scam flow (web chat → replies → stages rapport/bait/payment_request/stall + stage history → takeover → extraction → verify → bank hit) · d. AI summary: conversation, persona and dashboard overview endpoints, then the dashboard card, persona detail and conversation view |
-| `tests/api/demo-path.spec.ts` | v1.0 demo path through the API, one step per stage |
-| `tests/ui/console.spec.ts` | e. bank simulator (`/demo/bank`): held hit and clean miss · f. web chat (`/demo/chat`) + conversations page: messages, stage bar, polling without reload, operator takeover |
-| `tests/ui/webchat.spec.ts` | web chat regression: reply + captured account |
-| `tests/ui/undecryptable.spec.ts` | g. a real conversation with one stored message corrupted on the test DB (`SOCKABUS_E2E_PSQL`): the API flags it `undecryptable`, the conversations page shows a muted placeholder bubble, the persona keeps replying and the AI summary still works |
+| `playwright/api/endpoints.spec.ts` | One test per HTTP route: `/healthz`, `/readyz` (server.go), every route in `internal/server/live.go` (incl. `/internal/sim/*`, `/internal/status`, `/v1/lookup`) and the console routes in `web/src/app/api/**/route.ts`. Status codes, 401 without/with a wrong token or session, response shape, 400/404 paths. |
+| `playwright/api/journeys.spec.ts` | a. persona generation · b. Telegram accounts/connect/chat · c. scam flow (web chat → replies → stages rapport/bait/payment_request/stall + stage history → takeover → extraction → verify → bank hit) · d. AI summary: conversation, persona and dashboard overview endpoints, then the dashboard card, persona detail and conversation view |
+| `playwright/api/demo-path.spec.ts` | v1.0 demo path through the API, one step per stage |
+| `playwright/ui/console.spec.ts` | e. bank simulator (`/demo/bank`): held hit and clean miss · f. web chat (`/demo/chat`) + conversations page: messages, stage bar, polling without reload, operator takeover |
+| `playwright/ui/webchat.spec.ts` | web chat regression: reply + captured account |
+| `playwright/ui/undecryptable.spec.ts` | g. a real conversation with one stored message corrupted on the test DB (`SOCKABUS_E2E_PSQL`): the API flags it `undecryptable`, the conversations page shows a muted placeholder bubble, the persona keeps replying and the AI summary still works |
 
 Rules the suite keeps: no mocks or `page.route`, no stubbed responses, no hardcoded IDs; every input
 (persona, scammer name, messages, account numbers) is generated per run; no `test.skip` / `fixme` / `only`.
@@ -29,10 +33,10 @@ Compose `app`/`web` containers or the database in `.env`. `scripts/e2e-stack.sh`
 ```sh
 pnpm install && pnpm exec playwright install chromium   # once
 scripts/e2e-stack.sh up        # containers, migrate + seed, API, console; waits until ready
-scripts/e2e-stack.sh test      # full suite; extra args go to playwright (e.g. tests/ui, -g "bank")
+scripts/e2e-stack.sh test      # full suite; extra args go to playwright (e.g. playwright/ui, -g "bank")
 scripts/e2e-stack.sh down      # stop everything and delete the scratch DB
 scripts/e2e-stack.sh status    # what is running, and which LLM the API uses
-eval "$(scripts/e2e-stack.sh env)"   # the test variables, to run `pnpm exec playwright ...` yourself
+eval "$(scripts/e2e-stack.sh env)"   # the test variables, to run `pnpm test:e2e ...` yourself
 ```
 
 `up` and `test` refuse to run when `DATABASE_URL` or `SOCKABUS_POSTGRES_URL` contains `supabase`, and the
@@ -56,18 +60,18 @@ then message it from another Telegram account.
 
 ## Results
 
-- `playwright-report/index.html`: HTML report (`pnpm exec playwright show-report`), with steps, traces and,
+- `playwright/playwright-report/index.html`: HTML report (`pnpm exec playwright show-report playwright/playwright-report`), with steps, traces and,
   for UI tests, a screenshot and trace of every test.
-- `tests/results/latest.json`: JSON results of the last run.
-- `test-results/`: per-test traces (`pnpm exec playwright show-trace <path>/trace.zip`) and screenshots.
+- `playwright/results/latest.json`: JSON results of the last run.
+- `playwright/test-results/`: per-test traces (`pnpm exec playwright show-trace <path>/trace.zip`) and screenshots.
 - `.e2e/api.log`, `.e2e/web.log`: backend and console logs of the test stack.
 
 ## Monitoring
 
 `scripts/e2e-monitor.sh` runs the whole suite on the throwaway stack and keeps a history. It brings the
 stack up if it is not already up (and down again afterwards), uses `E2E_LLM_PROVIDER=fake` unless you
-set another, copies `tests/results/latest.json` to `tests/results/history/<UTC timestamp>.json` with that
-run's screenshots in `<timestamp>.files/` (last 50 runs kept), logs to `tests/results/monitor.log` and
+set another, copies `playwright/results/latest.json` to `playwright/results/history/<UTC timestamp>.json` with that
+run's screenshots in `<timestamp>.files/` (last 50 runs kept), logs to `playwright/results/monitor.log` and
 exits with the suite's exit code. A lock (`.e2e/monitor.lock`) makes an overlapping run skip (exit 75).
 
 ```sh
@@ -99,9 +103,9 @@ and a sleeping Mac runs a missed interval once on wake.
 
 **Console.** `/automate` in the console shows the latest run (start time, duration, LLM provider, totals),
 every test with its steps and error, the screenshots, and the monitor history. It reads the results
-directory on the server: `SOCKABUS_E2E_RESULTS_DIR` (default `<repo>/tests/results` when run from `web/`);
-the HTML report (`/api/automate/report/index.html`, or `pnpm exec playwright show-report`) and
-`test-results/` are taken from two levels above it. The Compose `web` service mounts these three
+directory on the server: `SOCKABUS_E2E_RESULTS_DIR` (default `<repo>/playwright/results` when run from `web/`);
+the HTML report (`/api/automate/report/index.html`, or `pnpm exec playwright show-report playwright/playwright-report`) and
+`test-results/` are taken from one level above it (`playwright/`). The Compose `web` service mounts these three
 directories read-only under `/e2e`.
 
 ## Backend settings (any other stack, e.g. CI)

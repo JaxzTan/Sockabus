@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Scheduled Playwright run (tests/README.md "Monitoring"). Run by `make monitor` and by the schedule
+# Scheduled Playwright run (playwright/README.md "Monitoring"). Run by `make monitor` and by the schedule
 # `make monitor-install` sets up (crontab or a launchd LaunchAgent).
 #
 #   1. takes a lock (.e2e/monitor.lock), so two runs never overlap
 #   2. brings the throwaway test stack up (scripts/e2e-stack.sh) unless it is already up
 #   3. runs the full suite with E2E_LLM_PROVIDER=fake (override: E2E_LLM_PROVIDER=gemini make monitor)
-#   4. copies tests/results/latest.json to tests/results/history/<UTC timestamp>.json (+ its screenshots
+#   4. copies playwright/results/latest.json to playwright/results/history/<UTC timestamp>.json (+ its screenshots
 #      in <timestamp>.files/), keeps the last 50
 #   5. alerts when the run failed or passed fewer tests than the previous one: macOS notification, plus
 #      Telegram (SOCKABUS_ALERT_TELEGRAM_BOT_TOKEN + SOCKABUS_ALERT_TELEGRAM_CHAT_ID) and Uptime Kuma
 #      (SOCKABUS_KUMA_E2E_PUSH_URL, pushed every run: up or down) when those are set in .env
 #   6. brings the stack down again if this script brought it up
-# Everything goes to tests/results/monitor.log. Exit code: the suite's (0 = all passed), or the stack's.
+# Everything goes to playwright/results/monitor.log. Exit code: the suite's (0 = all passed), or the stack's.
 # Never touches the Compose app/web/postgres/redis/temporal containers or the database in .env.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RESULTS="$ROOT/tests/results"
+RESULTS="$ROOT/playwright/results"
 HIST="$RESULTS/history"
 LOG="$RESULTS/monitor.log"
 STATE="$ROOT/.e2e"
@@ -120,7 +120,7 @@ else
   started=1
   if ! "$STACK" up >> "$LOG" 2>&1; then
     log "FAILED: the test stack did not come up (see above)"
-    notify "Sockabus e2e monitor" "Run $stamp: the test stack did not start. See tests/results/monitor.log"
+    notify "Sockabus e2e monitor" "Run $stamp: the test stack did not start. See playwright/results/monitor.log"
     kuma down "stack did not start"
     exit 1
   fi
@@ -136,8 +136,8 @@ log "playwright exited $rc"
 
 latest="$RESULTS/latest.json"
 if [ ! -f "$latest" ] || [ ! "$latest" -nt "$marker" ]; then
-  log "FAILED: playwright wrote no tests/results/latest.json"
-  notify "Sockabus e2e monitor" "Run $stamp: Playwright produced no results (exit $rc). See tests/results/monitor.log"
+  log "FAILED: playwright wrote no playwright/results/latest.json"
+  notify "Sockabus e2e monitor" "Run $stamp: Playwright produced no results (exit $rc). See playwright/results/monitor.log"
   kuma down "no results (exit $rc)"
   [ "$rc" = 0 ] && rc=1
   exit "$rc"
@@ -147,8 +147,8 @@ fi
 prev=$(ls -1 "$HIST"/*.json 2>/dev/null | sort | tail -n1)
 cp "$latest" "$HIST/$stamp.json"
 # Screenshots of this run (test-results/ is overwritten by the next run).
-if [ -d "$ROOT/test-results" ]; then
-  (cd "$ROOT/test-results" && find . -name '*.png' -print0 | while IFS= read -r -d '' f; do
+if [ -d "$ROOT/playwright/test-results" ]; then
+  (cd "$ROOT/playwright/test-results" && find . -name '*.png' -print0 | while IFS= read -r -d '' f; do
     mkdir -p "$HIST/$stamp.files/$(dirname "$f")" && cp "$f" "$HIST/$stamp.files/$f"
   done)
 fi

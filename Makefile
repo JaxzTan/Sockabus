@@ -120,7 +120,7 @@ lint:
 	go vet ./...
 	$(GOLANGCI) run ./...
 
-# Playwright monitor (tests/README.md "Monitoring"): throwaway test stack, fake LLM, history in tests/results.
+# Playwright monitor (playwright/README.md "Monitoring"): throwaway test stack, fake LLM, history in playwright/results.
 # env -u: make exports .env, whose DATABASE_URL is Supabase; the monitor must never see it.
 INTERVAL ?= 60
 MECH ?= cron

@@ -301,7 +301,7 @@ All v1.0 endpoints are specified in `api/openapi.yaml`; the mock server is gener
 | Prod (v1.0) | One VPS (SG/MY): Compose stack + Caddy (HTTPS) + Uptime Kuma. Temporal self-hosted in Compose. Live LLM provider. Staging environment and Temporal Cloud after v1.0. |
 
 - **Repo layout (data):** `db/migrations`, `db/queries`, `db/schema.dbml` (generated), `sqlc.yaml` (engine `postgresql`, `sql_package: pgx/v5`).
-- **Repo layout (API + tests):** `api/openapi.yaml` (contract + mock source), `tests/api/` (Playwright API tests), `tests/ui/` (Playwright UI tests), `playwright.config.ts` (`baseURL` from env so the same tests hit mock, local or prod).
+- **Repo layout (API + tests):** `api/openapi.yaml` (contract + mock source), `playwright/api/` (Playwright API tests), `playwright/ui/` (Playwright UI tests), `playwright/playwright.config.ts` (`baseURL` from env so the same tests hit mock, local or prod).
 - **CI/CD:** GitHub Actions on every PR — lint, `go test`, `sqlc diff`, `sqlc vet`, migrations up/down, Compose up, Playwright API + UI tests, upload HTML report on failure. Merge to `main` is blocked on failure. Deploy is a manual workflow or `make deploy` on the VPS.
 - **Monitoring (v1.0):** Uptime Kuma monitors — HTTP `/healthz` (60 s), HTTP synthetic `/v1/lookup` (60 s), HTTP dashboard (60 s), Push heartbeat from Telegram connector (60 s). Notifications to the team Telegram group and email. Dashboard status page reads `/internal/status`.
 - **Observability (later):** Prometheus + Grafana, Sentry; dashboards for lookup latency, conversations by stage, extraction rate, ban rate, LLM cost per conversation.

@@ -1,5 +1,5 @@
 // v1.0 demo path through the operator API (PRD §10, TRD §9). Needs a live-mode backend with
-// SOCKABUS_SIM=1 and a 1 s reply delay (see tests/README.md).
+// SOCKABUS_SIM=1 and a 1 s reply delay (see playwright/README.md).
 // Every run uses a new persona, scammer and account number, and retires/closes them at the end,
 // so reruns pass on the same database (messages and verifications are append-only by design).
 // One test with a step per stage: a failing stage fails the test and is named in the report,

@@ -3,16 +3,16 @@
 //   <results>/latest.json             the last run (any `playwright test`, manual or monitor)
 //   <results>/history/<UTC ts>.json   one file per monitor run (last 50)
 //   <results>/history/<UTC ts>.files/ that run's screenshots (copied out of test-results/)
-// <results> is SOCKABUS_E2E_RESULTS_DIR, default <repo>/tests/results (web/ is the working directory under
-// `pnpm dev`). The HTML report and the live test-results/ sit two levels up from it, at the repo root;
+// <results> is SOCKABUS_E2E_RESULTS_DIR, default <repo>/playwright/results (web/ is the working directory under
+// `pnpm dev`). The HTML report and the live test-results/ sit one level up from it, in playwright/;
 // SOCKABUS_E2E_REPORT_DIR / SOCKABUS_E2E_ARTIFACTS_DIR override them.
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { E2EResult, E2ERun, E2ERunSummary, E2EStep, E2ETest } from "./e2e-types";
 
-export const resultsDir = () => path.resolve(process.env.SOCKABUS_E2E_RESULTS_DIR || path.join(process.cwd(), "..", "tests", "results"));
-export const reportDir = () => path.resolve(process.env.SOCKABUS_E2E_REPORT_DIR || path.join(resultsDir(), "..", "..", "playwright-report"));
-export const artifactsDir = () => path.resolve(process.env.SOCKABUS_E2E_ARTIFACTS_DIR || path.join(resultsDir(), "..", "..", "test-results"));
+export const resultsDir = () => path.resolve(process.env.SOCKABUS_E2E_RESULTS_DIR || path.join(process.cwd(), "..", "playwright", "results"));
+export const reportDir = () => path.resolve(process.env.SOCKABUS_E2E_REPORT_DIR || path.join(resultsDir(), "..", "playwright-report"));
+export const artifactsDir = () => path.resolve(process.env.SOCKABUS_E2E_ARTIFACTS_DIR || path.join(resultsDir(), "..", "test-results"));
 const historyDir = () => path.join(resultsDir(), "history");
 
 // Run ids: "latest" or a history file name without .json (20261101T085012Z). Nothing else reaches the disk.

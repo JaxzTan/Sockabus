@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Schedules scripts/e2e-monitor.sh (tests/README.md "Monitoring"). Used by the Makefile:
+# Schedules scripts/e2e-monitor.sh (playwright/README.md "Monitoring"). Used by the Makefile:
 #
 #   scripts/e2e-monitor-schedule.sh install [minutes] [cron|launchd]   default: 60, cron
 #   scripts/e2e-monitor-schedule.sh uninstall                          removes both mechanisms
@@ -11,7 +11,7 @@
 # closes the repo in iCloud Drive to background jobs ("Operation not permitted"): grant that binary Full
 # Disk Access once (System Settings > Privacy & Security > Full Disk Access > +).
 # Output of the scheduled job (incl. such errors) goes to ~/Library/Logs/sockabus-e2e-monitor.log, outside
-# the repo, so a blocked run still leaves a trace. The run's own log is tests/results/monitor.log.
+# the repo, so a blocked run still leaves a trace. The run's own log is playwright/results/monitor.log.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -140,16 +140,16 @@ status() {
   fi
   [ "$any" = 1 ] || echo "  none (make monitor-install)"
   echo "last monitor run:"
-  local last; last=$(ls -1 "$ROOT"/tests/results/history/*.json 2>/dev/null | sort | tail -n1 || true)
+  local last; last=$(ls -1 "$ROOT"/playwright/results/history/*.json 2>/dev/null | sort | tail -n1 || true)
   if [ -n "$last" ]; then
     jq -r --arg f "$(basename "$last")" '"  \($f): started \(.stats.startTime), passed \(.stats.expected), failed \(.stats.unexpected), skipped \(.stats.skipped), flaky \(.stats.flaky), llm \(.config.metadata.llm // "?")"' "$last"
-    echo "  runs kept: $(ls -1 "$ROOT"/tests/results/history/*.json | wc -l | tr -d ' ')"
+    echo "  runs kept: $(ls -1 "$ROOT"/playwright/results/history/*.json | wc -l | tr -d ' ')"
   else
     echo "  none yet"
   fi
-  if [ -f "$ROOT/tests/results/monitor.log" ]; then
+  if [ -f "$ROOT/playwright/results/monitor.log" ]; then
     echo "monitor.log (last 3 lines):"
-    tail -n 3 "$ROOT/tests/results/monitor.log" | sed 's/^/  /'
+    tail -n 3 "$ROOT/playwright/results/monitor.log" | sed 's/^/  /'
   fi
   if [ -f "$OUT" ]; then
     echo "scheduler output $OUT (last 3 lines):"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Throwaway stack for the Playwright suite (tests/README.md). Never touches the Compose `app`/`web`
+# Throwaway stack for the Playwright suite (playwright/README.md). Never touches the Compose `app`/`web`
 # containers or the database in .env (Supabase): it runs its own PostgreSQL, Redis and Temporal
 # containers on other ports, the Go API from source on :18080 and the console (`pnpm dev`) on :13000.
 #
@@ -231,7 +231,7 @@ envout() {
   [ -f "$STATE/stack.env" ] || die "stack is not up (scripts/e2e-stack.sh up)"
   grep -v '^SOCKABUS_MESSAGE_KEY=' "$STATE/stack.env" | sed 's/^/export /'
   echo "export SOCKABUS_E2E_LLM=$(cat "$STATE/llm-provider" 2>/dev/null || echo unknown)"
-  # Direct SQL on the scratch DB for test setup that no API can do (tests/helpers.ts psql()).
+  # Direct SQL on the scratch DB for test setup that no API can do (playwright/helpers.ts psql()).
   echo "export SOCKABUS_E2E_PSQL='docker exec -i $NAME-pg psql -U buru -d $DB_NAME'"
 }
 
@@ -240,7 +240,7 @@ runtests() {
   [ -f "$STATE/stack.env" ] || die "stack is not up (scripts/e2e-stack.sh up)"
   eval "$(envout)"
   curl -fsS "$SOCKABUS_API_URL/readyz" >/dev/null || die "API $SOCKABUS_API_URL is not ready"
-  cd "$ROOT" && unset DATABASE_URL SOCKABUS_POSTGRES_URL && exec pnpm exec playwright test "$@"
+  cd "$ROOT" && unset DATABASE_URL SOCKABUS_POSTGRES_URL && exec pnpm exec playwright test -c playwright/playwright.config.ts "$@"
 }
 
 case "${1:-}" in

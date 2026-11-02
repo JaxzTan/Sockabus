@@ -15,7 +15,7 @@ backend gaps in [TRD.md](TRD.md) §13 (status page, monitoring, automated tests,
 | Reply timing | The 10 s FR-3 floor is configurable for CI; prod refuses lower values | FR-3, TR-3 |
 | Database | Every DB script and `make` target targets Supabase; the prod stack has no local Postgres | NFR-11, TR-23 |
 | Tests | Playwright API and UI tests for the demo path; new CI job `e2e` | NFR-10, TR-21 |
-| Docs | Architecture diagram, `docs/makefile.md`, `docs/docker.md`, `tests/README.md` | — |
+| Docs | Architecture diagram, `docs/makefile.md`, `docs/docker.md`, `playwright/README.md` | — |
 
 No API path was renamed. `git diff` shows 22 changed files; there are about 15 new files.
 
@@ -131,13 +131,13 @@ been applied to Supabase: run `make db-check` first.
 | Layer | Where | Covers |
 |---|---|---|
 | Go unit | `internal/server/status_test.go`, `internal/llm/errcount_test.go`, `internal/channel/telegram/heartbeat_test.go`, `internal/workflows/conversation_test.go`, `internal/llm/llm_test.go`, `internal/persona/generator_test.go` | Status endpoint and 401, error window, heartbeat start and stop, lowered reply floor, fake determinism, generator with the fake |
-| Playwright API | `tests/api/demo-path.spec.ts` | Generate → activate → scammer message → persona reply → takeover → operator message → bank account extracted → verify → `/v1/lookup` hit and miss → status; plus 401 checks |
-| Playwright UI | `tests/ui/webchat.spec.ts` | Web chat page: send a message, see the persona reply and the captured account |
+| Playwright API | `playwright/api/demo-path.spec.ts` | Generate → activate → scammer message → persona reply → takeover → operator message → bank account extracted → verify → `/v1/lookup` hit and miss → status; plus 401 checks |
+| Playwright UI | `playwright/ui/webchat.spec.ts` | Web chat page: send a message, see the persona reply and the captured account |
 
 Each run makes its own persona, scammer and account number, then closes the conversation and retires
 the persona, so reruns pass on the same database. Settings and commands are in
-[tests/README.md](../tests/README.md). Playwright lives at the repo root (`package.json`,
-`playwright.config.ts`), version 1.64.1.
+[playwright/README.md](../playwright/README.md). Playwright lives in `playwright/` (config `playwright/playwright.config.ts`; deps in root
+`package.json`), version 1.64.1.
 
 **CI job `e2e`** (`.github/workflows/ci.yml`): writes a throwaway `.env` (fake LLM, local Postgres,
 fresh keys), starts the Compose stack, waits for `/readyz` and the console, migrates and seeds, runs
@@ -170,7 +170,7 @@ GitHub yet.
 1. `go vet ./... && go test -race ./...`
 2. `cd web && pnpm lint && pnpm build`
 3. `make test-db DATABASE_URL=` (local database)
-4. Playwright against a local backend started with the settings in [tests/README.md](../tests/README.md):
+4. Playwright against a local backend started with the settings in [playwright/README.md](../playwright/README.md):
    `pnpm test:e2e`
 5. `docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app config --quiet`
    (needs `SOCKABUS_DOMAIN` set)
