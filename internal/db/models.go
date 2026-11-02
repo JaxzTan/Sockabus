@@ -137,6 +137,7 @@ type Channel string
 const (
 	ChannelTelegram Channel = "telegram"
 	ChannelWhatsapp Channel = "whatsapp"
+	ChannelWebchat  Channel = "webchat"
 )
 
 func (e *Channel) Scan(src interface{}) error {
@@ -177,7 +178,8 @@ func (ns NullChannel) Value() (driver.Value, error) {
 func (e Channel) Valid() bool {
 	switch e {
 	case ChannelTelegram,
-		ChannelWhatsapp:
+		ChannelWhatsapp,
+		ChannelWebchat:
 		return true
 	}
 	return false
@@ -187,6 +189,7 @@ func AllChannelValues() []Channel {
 	return []Channel{
 		ChannelTelegram,
 		ChannelWhatsapp,
+		ChannelWebchat,
 	}
 }
 
@@ -992,6 +995,14 @@ func AllVerificationDecisionValues() []VerificationDecision {
 	}
 }
 
+type AccountHealthEvent struct {
+	ID        int64           `json:"id"`
+	AccountID int64           `json:"account_id"`
+	Event     string          `json:"event"`
+	Detail    json.RawMessage `json:"detail"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 type ApiKey struct {
 	ID              int64      `json:"id"`
 	CustomerID      int64      `json:"customer_id"`
@@ -1019,18 +1030,47 @@ type ChainTransfer struct {
 }
 
 type Conversation struct {
-	ID                 int64              `json:"id"`
-	AccountID          int64              `json:"account_id"`
-	PlaybookID         pgtype.Int8        `json:"playbook_id"`
-	TemporalWorkflowID string             `json:"temporal_workflow_id"`
-	ScammerHandle      string             `json:"scammer_handle"`
-	ScamType           NullScamType       `json:"scam_type"`
-	Stage              string             `json:"stage"`
-	Status             ConversationStatus `json:"status"`
-	StartedAt          time.Time          `json:"started_at"`
-	LastMessageAt      *time.Time         `json:"last_message_at"`
-	ClosedAt           *time.Time         `json:"closed_at"`
-	ScammerPeerRef     pgtype.Text        `json:"scammer_peer_ref"`
+	ID                       int64              `json:"id"`
+	AccountID                int64              `json:"account_id"`
+	PlaybookID               pgtype.Int8        `json:"playbook_id"`
+	TemporalWorkflowID       string             `json:"temporal_workflow_id"`
+	ScammerHandle            pgtype.Text        `json:"scammer_handle"`
+	ScamType                 NullScamType       `json:"scam_type"`
+	Stage                    string             `json:"stage"`
+	Status                   ConversationStatus `json:"status"`
+	StartedAt                time.Time          `json:"started_at"`
+	LastMessageAt            *time.Time         `json:"last_message_at"`
+	ClosedAt                 *time.Time         `json:"closed_at"`
+	ScammerPeerRef           pgtype.Text        `json:"scammer_peer_ref"`
+	ScammerHandleCiphertext  []byte             `json:"-"`
+	ScammerPeerRefCiphertext []byte             `json:"-"`
+	ScammerPeerRefBidx       []byte             `json:"-"`
+	IdentifiersDekRef        pgtype.Text        `json:"-"`
+}
+
+type ConversationStageEvent struct {
+	ID             int64        `json:"id"`
+	ConversationID int64        `json:"conversation_id"`
+	FromStage      pgtype.Text  `json:"from_stage"`
+	ToStage        string       `json:"to_stage"`
+	FromScamType   NullScamType `json:"from_scam_type"`
+	ScamType       NullScamType `json:"scam_type"`
+	Source         string       `json:"source"`
+	CreatedAt      time.Time    `json:"created_at"`
+}
+
+type ConversationSummary struct {
+	ID                int64        `json:"id"`
+	ConversationID    int64        `json:"conversation_id"`
+	Summary           pgtype.Text  `json:"summary"`
+	Stage             string       `json:"stage"`
+	ScamType          NullScamType `json:"scam_type"`
+	Model             string       `json:"model"`
+	MessageCountAt    int32        `json:"message_count_at"`
+	Reason            string       `json:"reason"`
+	CreatedAt         time.Time    `json:"created_at"`
+	SummaryCiphertext []byte       `json:"-"`
+	DekRef            pgtype.Text  `json:"-"`
 }
 
 type Customer struct {
@@ -1041,6 +1081,17 @@ type Customer struct {
 	WebhookSecretRef pgtype.Text     `json:"webhook_secret_ref"`
 	WatchRules       json.RawMessage `json:"watch_rules"`
 	CreatedAt        time.Time       `json:"created_at"`
+}
+
+type CustomerSubscription struct {
+	ID          int64      `json:"id"`
+	CustomerID  int64      `json:"customer_id"`
+	PlanID      int64      `json:"plan_id"`
+	PeriodStart time.Time  `json:"period_start"`
+	PeriodEnd   time.Time  `json:"period_end"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CancelledAt *time.Time `json:"cancelled_at"`
 }
 
 type CustomerUser struct {
@@ -1083,6 +1134,23 @@ type HoneypotAccount struct {
 	CreatedAt     time.Time     `json:"created_at"`
 }
 
+type Invoice struct {
+	ID              int64          `json:"id"`
+	CustomerID      int64          `json:"customer_id"`
+	SubscriptionID  pgtype.Int8    `json:"subscription_id"`
+	PeriodStart     time.Time      `json:"period_start"`
+	PeriodEnd       time.Time      `json:"period_end"`
+	LookupCount     int32          `json:"lookup_count"`
+	IncludedLookups int32          `json:"included_lookups"`
+	OverageLookups  int32          `json:"overage_lookups"`
+	Amount          pgtype.Numeric `json:"amount"`
+	Currency        string         `json:"currency"`
+	Status          string         `json:"status"`
+	IssuedAt        *time.Time     `json:"issued_at"`
+	PaidAt          *time.Time     `json:"paid_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+}
+
 type LookupLog struct {
 	ID         int64      `json:"id"`
 	CustomerID int64      `json:"customer_id"`
@@ -1113,18 +1181,31 @@ type Operator struct {
 	CreatedAt     time.Time    `json:"created_at"`
 }
 
+type OverviewSummary struct {
+	ID                  int64       `json:"id"`
+	Summary             pgtype.Text `json:"summary"`
+	Model               string      `json:"model"`
+	ActivePersonas      int32       `json:"active_personas"`
+	ActiveConversations int32       `json:"active_conversations"`
+	CreatedAt           time.Time   `json:"created_at"`
+	SummaryCiphertext   []byte      `json:"-"`
+	DekRef              pgtype.Text `json:"-"`
+}
+
 type Persona struct {
-	ID              int64           `json:"id"`
-	Name            string          `json:"name"`
-	Age             pgtype.Int2     `json:"age"`
-	LanguageMix     json.RawMessage `json:"language_mix"`
-	Backstory       pgtype.Text     `json:"backstory"`
-	WealthProfile   json.RawMessage `json:"wealth_profile"`
-	Status          PersonaStatus   `json:"status"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	Profile         json.RawMessage `json:"profile"`
-	DemoIdentifiers json.RawMessage `json:"demo_identifiers"`
+	ID                        int64           `json:"id"`
+	Name                      string          `json:"name"`
+	Age                       pgtype.Int2     `json:"age"`
+	LanguageMix               json.RawMessage `json:"language_mix"`
+	Backstory                 pgtype.Text     `json:"backstory"`
+	WealthProfile             json.RawMessage `json:"wealth_profile"`
+	Status                    PersonaStatus   `json:"status"`
+	CreatedAt                 time.Time       `json:"created_at"`
+	UpdatedAt                 time.Time       `json:"updated_at"`
+	Profile                   json.RawMessage `json:"profile"`
+	DemoIdentifiers           json.RawMessage `json:"demo_identifiers"`
+	DemoIdentifiersCiphertext []byte          `json:"-"`
+	DemoIdentifiersDekRef     pgtype.Text     `json:"-"`
 }
 
 type PersonaPlaybook struct {
@@ -1141,6 +1222,30 @@ type PersonaPromptVersion struct {
 	CreatedAt    time.Time   `json:"created_at"`
 }
 
+type PersonaSummary struct {
+	ID                  int64       `json:"id"`
+	PersonaID           int64       `json:"persona_id"`
+	Summary             pgtype.Text `json:"summary"`
+	Model               string      `json:"model"`
+	ConversationCountAt int32       `json:"conversation_count_at"`
+	Reason              string      `json:"reason"`
+	CreatedAt           time.Time   `json:"created_at"`
+	SummaryCiphertext   []byte      `json:"-"`
+	DekRef              pgtype.Text `json:"-"`
+}
+
+type Plan struct {
+	ID              int64          `json:"id"`
+	Code            string         `json:"code"`
+	Name            string         `json:"name"`
+	MonthlyPrice    pgtype.Numeric `json:"monthly_price"`
+	Currency        string         `json:"currency"`
+	IncludedLookups int32          `json:"included_lookups"`
+	OveragePrice    pgtype.Numeric `json:"overage_price"`
+	Active          bool           `json:"active"`
+	CreatedAt       time.Time      `json:"created_at"`
+}
+
 type Playbook struct {
 	ID        int64           `json:"id"`
 	ScamType  ScamType        `json:"scam_type"`
@@ -1148,6 +1253,28 @@ type Playbook struct {
 	Version   int32           `json:"version"`
 	Stages    json.RawMessage `json:"stages"`
 	CreatedAt time.Time       `json:"created_at"`
+}
+
+type RetentionPurge struct {
+	ID               int64           `json:"id"`
+	Retention        pgtype.Interval `json:"retention"`
+	Cutoff           time.Time       `json:"cutoff"`
+	DryRun           bool            `json:"dry_run"`
+	MessagesDeleted  int64           `json:"messages_deleted"`
+	SightingsDeleted int64           `json:"sightings_deleted"`
+	SummariesDeleted int64           `json:"summaries_deleted"`
+	RequestedBy      string          `json:"requested_by"`
+	DbUser           string          `json:"db_user"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
+type TelegramUpdateState struct {
+	AccountID int64     `json:"account_id"`
+	Pts       int32     `json:"pts"`
+	Qts       int32     `json:"qts"`
+	Date      int32     `json:"date"`
+	Seq       int32     `json:"seq"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Verification struct {

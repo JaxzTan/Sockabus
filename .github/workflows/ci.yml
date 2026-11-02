@@ -69,3 +69,97 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
+
+  e2e: # TRD §9 / TR-21: Playwright API + UI tests against the Compose stack with the fake LLM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOCKABUS_API_URL: http://localhost:8080
+      SOCKABUS_WEB_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+
+      # Throwaway values only: fake LLM, local PostgreSQL in Compose, fresh keys per run.
+      - name: Write CI .env
+        run: |
+          token=$(openssl rand -hex 24)
+          console_pw=$(openssl rand -hex 16)
+          echo "::add-mask::$token"
+          echo "::add-mask::$console_pw"
+          cat > .env <<EOF
+          SOCKABUS_ENV=ci
+          SOCKABUS_MODE=live
+          SOCKABUS_POSTGRES_URL=postgres://buru:buru@postgres:5432/buru?sslmode=disable
+          SOCKABUS_OPERATOR_TOKEN=$token
+          SOCKABUS_OPERATOR_ID=1
+          SOCKABUS_MESSAGE_KEY=$(openssl rand -base64 32)
+          SOCKABUS_SIM=1
+          SOCKABUS_LLM_PROVIDER=fake
+          SOCKABUS_REPLY_DELAY_MIN=1s
+          SOCKABUS_REPLY_READ_MIN=1s
+          SOCKABUS_REPLY_READ_MAX=2s
+          SOCKABUS_TYPING_CPS=200
+          SOCKABUS_TEMPORAL_TASK_QUEUE=sockabus-e2e
+          SOCKABUS_TG_APP_ID=1
+          SOCKABUS_TG_APP_HASH=ci-no-sessions
+          SOCKABUS_CONSOLE_USER=e2e-operator
+          SOCKABUS_CONSOLE_PASSWORD=$console_pw
+          EOF
+          # Connector on with no session files (nothing connects); console sign-in on, as in production.
+          echo "SOCKABUS_OPERATOR_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "SOCKABUS_CONSOLE_USER=e2e-operator" >> "$GITHUB_ENV"
+          echo "SOCKABUS_CONSOLE_PASSWORD=$console_pw" >> "$GITHUB_ENV"
+          echo "SOCKABUS_E2E_LLM=fake" >> "$GITHUB_ENV"
+          echo "SOCKABUS_E2E_PSQL=docker compose exec -T postgres psql -U buru -d buru" >> "$GITHUB_ENV"
+
+      # Schema first: with the Telegram connector on, the app reads honeypot_accounts at startup.
+      - name: Start PostgreSQL, migrate and seed
+        run: |
+          docker compose up -d --wait postgres
+          docker compose --profile tools run --rm migrate
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U buru -d buru < db/seed/001_demo.sql
+
+      - name: Start the Compose stack
+        run: docker compose --profile app up -d --build --wait postgres redis temporal app web
+
+      - name: Wait for /readyz and the console
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS "$SOCKABUS_API_URL/readyz" && curl -fsS -o /dev/null "$SOCKABUS_WEB_URL/sign-in" && exit 0
+            sleep 2
+          done
+          echo "stack did not become ready in 120 s" >&2
+          exit 1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - name: Playwright (api + ui)
+        run: pnpm test:e2e
+
+      - name: Save Compose logs
+        if: ${{ !cancelled() }}
+        run: docker compose --profile app logs --no-color > compose.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+            tests/results/
+            compose.log
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile app --profile tools down -v

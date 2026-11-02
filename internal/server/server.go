@@ -22,6 +22,8 @@ type Server struct {
 	demo  *demostore.Store // optional: live demo data
 	eng   *engine.Engine
 	live  *liveAPI // SOCKABUS_MODE=live: PostgreSQL-backed API (takes precedence over demo)
+
+	temporal func(context.Context) error // readyz check; nil skips it
 }
 
 // WithLive serves the PostgreSQL-backed operator API (/internal/*) and lookup (/v1/lookup).
@@ -37,6 +39,20 @@ func (s *Server) WithSim(hub *sim.Hub) *Server {
 	if s.live != nil {
 		s.live.sim = hub
 	}
+	return s
+}
+
+// WithStatus sets what GET /internal/status reports. Call after WithLive.
+func (s *Server) WithStatus(src StatusSources) *Server {
+	if s.live != nil {
+		s.live.src = src
+	}
+	return s
+}
+
+// WithTemporalCheck adds Temporal to /readyz.
+func (s *Server) WithTemporalCheck(check func(context.Context) error) *Server {
+	s.temporal = check
 	return s
 }
 
@@ -68,7 +84,8 @@ func (s *Server) Routes() http.Handler {
 	return mux
 }
 
-// healthz reports that the process is alive.
+// healthz reports that the process is alive. It checks no dependencies, so a database or
+// Temporal outage never gets the process restarted; /readyz covers those.
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -87,6 +104,13 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	if err := s.redis.Ping(ctx).Err(); err != nil {
 		checks["redis"] = err.Error()
 		status = http.StatusServiceUnavailable
+	}
+	if s.temporal != nil {
+		checks["temporal"] = "ok"
+		if err := s.temporal(ctx); err != nil {
+			checks["temporal"] = err.Error()
+			status = http.StatusServiceUnavailable
+		}
 	}
 	writeJSON(w, status, checks)
 }

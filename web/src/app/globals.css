@@ -171,6 +171,8 @@ tr.hl-green td { background: var(--green-soft); }
 .stage.now { color: var(--ink); } .stage.now b { background: var(--mustard); border-color: var(--mustard); }
 .stages hr { flex: 1; min-width: 24px; border: 0; height: 2px; background: var(--line); margin: 0; }
 .stages hr.done { background: var(--ink); }
+.chat-sum { display: grid; gap: 4px; padding: 10px 20px; border-bottom: 1px solid var(--line); font-size: 15px; }
+.chat-sum p { margin: 0; }
 .msgs { flex: 1; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; max-height: 520px; }
 .msg { display: grid; gap: 4px; max-width: min(460px, 85%); }
 .msg p { margin: 0; padding: 12px 16px; border-radius: 18px; }
@@ -178,6 +180,7 @@ tr.hl-green td { background: var(--green-soft); }
 .msg.scammer { align-self: flex-start; } .msg.scammer p { background: var(--ink); color: #fff; border-bottom-left-radius: 4px; }
 .msg.persona, .msg.operator { align-self: flex-end; text-align: right; } .msg.persona p, .msg.operator p { text-align: left; background: var(--card); border: 1.5px solid var(--ink); border-bottom-right-radius: 4px; }
 .msg.operator p { border-color: var(--purple); background: var(--purple-soft); }
+.msg.undecryptable p { background: transparent; color: var(--muted); border: 1.5px dashed var(--muted); font-style: italic; }
 .typing { align-self: flex-end; color: var(--muted); font-size: 15px; display: flex; gap: 8px; align-items: center; }
 .typing span { display: inline-flex; gap: 3px; } .typing span i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; } .typing span i:nth-child(2){animation-delay:.2s} .typing span i:nth-child(3){animation-delay:.4s}
 @keyframes blink { 0%,80%,100% { opacity: .25 } 40% { opacity: 1 } }
@@ -402,6 +405,25 @@ a.tile:hover { border-color: var(--ink); }
 .wc-sec { display: grid; gap: 8px; }
 .wc-cap { background: var(--paper); border-radius: 12px; padding: 10px 12px; display: grid; gap: 6px; overflow-wrap: anywhere; }
 .wc-cap .mono { font-size: 14px; }
+
+/* ---------- automate (Playwright results) ---------- */
+.au-table td { vertical-align: top; }
+.au-file { font-size: 14px; white-space: nowrap; }
+tr.au-bad td { background: var(--red-soft); }
+tr.au-detail td { border-top: 0; background: var(--paper); padding-top: 4px; }
+.au-err1 { color: var(--red); font-size: 14px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.au-d { display: grid; gap: 12px; }
+.au-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.au-steps li { display: flex; gap: 10px; align-items: baseline; }
+.au-steps .au-st { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.au-steps .mono { font-size: 14px; }
+.au-mark { width: 18px; flex: none; font-weight: 700; color: var(--green); }
+.au-steps li.f .au-mark, .au-steps li.f .au-st { color: var(--red); font-weight: 600; }
+.au-pre { margin: 0; background: var(--ink-2); color: var(--on-ink); border-radius: 12px; padding: 12px 14px; font: 400 13px/1.55 var(--f-mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.au-shots { display: flex; gap: 10px; flex-wrap: wrap; }
+.au-shots img { display: block; width: 240px; height: auto; border-radius: var(--r-s); border: 1px solid var(--line); background: var(--card); }
+.au-hist { display: grid; gap: 10px; }
+.au-h2 { font: 400 22px/26px var(--f-display); }
 
 /* ---------- toast ---------- */
 .toasts { position: fixed; right: max(24px, env(safe-area-inset-right, 0px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; z-index: 50; }

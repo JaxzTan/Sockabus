@@ -1,6 +1,6 @@
 // Package llm is the provider-agnostic LLM boundary for the persona engine, extraction and the
-// persona generator. TRD §3 names the Claude API; Gemini 3.8 Flash is supported behind the same
-// interface (selected with SOCKABUS_LLM_PROVIDER) so the rest of the code does not depend on a vendor.
+// persona generator. TRD §3 names the Claude API, which is the default; Gemini is still supported
+// behind the same interface (SOCKABUS_LLM_PROVIDER=gemini) and "fake" serves CI and the monitor.
 //
 // Prompt-injection rule (TRD §7): scammer text only ever goes into Turns with RoleUser.
 // It is never concatenated into System.
@@ -78,7 +78,7 @@ func Normalize(turns []Turn) []Turn {
 
 // Config selects and configures a provider.
 type Config struct {
-	Provider      string // gemini | anthropic | none
+	Provider      string // anthropic (default) | gemini | fake | none
 	Model         string
 	GeminiKey     string
 	AnthropicKey  string
@@ -89,16 +89,18 @@ type Config struct {
 // callers can fall back to playbook lines. An unknown provider is an error.
 func New(cfg Config) (Client, error) {
 	switch strings.ToLower(cfg.Provider) {
-	case "", "gemini":
+	case "gemini":
 		if cfg.GeminiKey == "" {
 			return nil, nil
 		}
 		return NewGemini(cfg.GeminiKey, cfg.Model, cfg.ThinkingLevel), nil
-	case "anthropic", "claude":
+	case "", "anthropic", "claude":
 		if cfg.AnthropicKey == "" {
 			return nil, nil
 		}
 		return NewAnthropic(cfg.AnthropicKey, cfg.Model), nil
+	case "fake":
+		return NewFake(), nil
 	case "none", "off":
 		return nil, nil
 	default:

@@ -39,9 +39,11 @@ services:
     build: .
     env_file: .env
     environment:
-      SOCKABUS_POSTGRES_URL: postgres://buru:${POSTGRES_PASSWORD:-buru}@postgres:5432/buru?sslmode=disable
       SOCKABUS_REDIS_ADDR: redis:6379
       SOCKABUS_TEMPORAL_HOSTPORT: temporal:7233
+      SOCKABUS_TG_SESSION_DIR: /secrets/telegram
+    # Session files from make tglogin (same mount as docker-compose.prod.yml).
+    volumes: [./.secrets/telegram:/secrets/telegram]
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -60,6 +62,13 @@ services:
       SOCKABUS_CONSOLE_USER: ${SOCKABUS_CONSOLE_USER:-} # console sign-in, checked on the Next server
       SOCKABUS_CONSOLE_PASSWORD: ${SOCKABUS_CONSOLE_PASSWORD:-}
       SOCKABUS_CONSOLE_AUTH: ${SOCKABUS_CONSOLE_AUTH:-}
+      # /automate reads Playwright results from disk (web/src/lib/e2e-results.ts); the report and
+      # screenshots are found two levels up from it (/e2e/playwright-report, /e2e/test-results).
+      SOCKABUS_E2E_RESULTS_DIR: /e2e/tests/results
+    volumes:
+      - ./tests/results:/e2e/tests/results:ro
+      - ./playwright-report:/e2e/playwright-report:ro
+      - ./test-results:/e2e/test-results:ro
     ports: ["3000:3000"]
     depends_on: [app]
 

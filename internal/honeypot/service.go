@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,10 @@ import (
 type Config struct {
 	TaskQueue string
 	Timing    workflows.Timing
+	// PlaintextIdentifiers keeps writing conversations.scammer_handle / scammer_peer_ref and
+	// personas.demo_identifiers in clear next to their ciphertext (000012 phase 1). Turn it off
+	// (SOCKABUS_IDENTIFIER_PLAINTEXT=0) before applying the pending drop_plaintext_identifiers migration.
+	PlaintextIdentifiers bool
 }
 
 type Service struct {
@@ -39,6 +44,8 @@ type Service struct {
 	Box        *msgcrypt.Box
 	PersonaLLM llm.Client // nil → playbook fallback lines
 	ExtractLLM llm.Client // nil → regex extraction + keyword classifier only
+	GenLLM     llm.Client // persona generation: long per-try timeout; nil → PersonaLLM
+	SummaryLLM llm.Client // AI summaries (TR-7): extract model, long per-try timeout; nil → GenLLM
 	Temporal   client.Client
 	Senders    *gateway.Registry
 	Sim        gateway.Sender // dev-only simulated channel (internal/channel/sim); nil when disabled
@@ -109,9 +116,10 @@ func (s *Service) HandleInbound(ctx context.Context, in gateway.Inbound) error {
 }
 
 func (s *Service) openConversation(ctx context.Context, acct db.HoneypotAccount, in gateway.Inbound) (db.Conversation, bool, error) {
-	peer := pgtype.Text{String: in.PeerRef, Valid: true}
-	conv, err := s.Q.FindOpenConversationByPeer(ctx, db.FindOpenConversationByPeerParams{AccountID: acct.ID, ScammerPeerRef: peer})
+	find := db.FindOpenConversationByPeerParams{AccountID: acct.ID, PeerBidx: s.Box.PeerRefIndex(in.PeerRef), PeerRef: in.PeerRef}
+	conv, err := s.Q.FindOpenConversationByPeer(ctx, find)
 	if err == nil {
+		s.revealConversation(&conv)
 		return conv, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -122,15 +130,38 @@ func (s *Service) openConversation(ctx context.Context, acct db.HoneypotAccount,
 	if pbs, err := s.Q.ListPersonaPlaybooks(ctx, acct.PersonaID); err == nil && len(pbs) == 1 {
 		playbookID = pgtype.Int8{Int64: pbs[0].ID, Valid: true}
 	}
+	handle := truncate(in.Handle, 255)
+	sealed, err := s.sealConversationIdentifiers(acct.ID, handle, in.PeerRef)
+	if err != nil {
+		return db.Conversation{}, false, err
+	}
 	conv, err = s.Q.CreateConversationForPeer(ctx, db.CreateConversationForPeerParams{
-		AccountID:          acct.ID,
-		PlaybookID:         playbookID,
-		TemporalWorkflowID: fmt.Sprintf("conversation-%d-%d", acct.ID, s.Now().UnixNano()),
-		ScammerHandle:      truncate(in.Handle, 255),
-		ScammerPeerRef:     peer,
-		StartedAt:          in.SentAt,
+		AccountID:                acct.ID,
+		PlaybookID:               playbookID,
+		TemporalWorkflowID:       fmt.Sprintf("conversation-%d-%d", acct.ID, s.Now().UnixNano()),
+		ScammerHandle:            s.plaintextOrNull(handle),
+		ScammerPeerRef:           s.plaintextOrNull(in.PeerRef),
+		StartedAt:                in.SentAt,
+		ScammerHandleCiphertext:  sealed.handle,
+		ScammerPeerRefCiphertext: sealed.peerRef,
+		ScammerPeerRefBidx:       sealed.peerBidx,
+		IdentifiersDekRef:        sealed.dekRef,
 	})
-	return conv, err == nil, err
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A concurrent first message created the open conversation (conversations_open_peer_bidx_uq).
+		conv, err = s.Q.FindOpenConversationByPeer(ctx, find)
+		s.revealConversation(&conv)
+		return conv, false, err
+	}
+	if err != nil {
+		return db.Conversation{}, false, err
+	}
+	s.revealConversation(&conv)
+	// Scam phase history starts with the initial stage (best effort: routing must not fail on it).
+	if _, herr := s.Q.InsertStageEvent(ctx, db.InsertStageEventParams{ConversationID: conv.ID, ToStage: conv.Stage, ScamType: conv.ScamType, Source: StageSourceBot}); herr != nil {
+		s.Log.Warn("initial stage event not recorded", "conversation_id", conv.ID, "err", herr)
+	}
+	return conv, true, nil
 }
 
 // storeMessage encrypts and appends a message. inserted is false when dedupeKey already exists.
@@ -156,29 +187,40 @@ func (s *Service) storeMessage(ctx context.Context, convID int64, dir db.Message
 
 // PlainMessage is a decrypted message for the persona engine and the operator console.
 // Text is untrusted scammer content when SenderType is "scammer": render it as plain text only.
+// Undecryptable messages (wrong key, corrupted ciphertext) carry UndecryptableText and
+// Undecryptable=true; they are shown as such in the console and never sent to an LLM (readable()).
 type PlainMessage struct {
-	ID         int64     `json:"id"`
-	Direction  string    `json:"direction"`
-	SenderType string    `json:"sender_type"`
-	OperatorID *int64    `json:"operator_id,omitempty"`
-	Text       string    `json:"text"`
-	SentAt     time.Time `json:"sent_at"`
+	ID            int64     `json:"id"`
+	Direction     string    `json:"direction"`
+	SenderType    string    `json:"sender_type"`
+	OperatorID    *int64    `json:"operator_id,omitempty"`
+	Text          string    `json:"text"`
+	SentAt        time.Time `json:"sent_at"`
+	Undecryptable bool      `json:"undecryptable,omitempty"`
 }
 
+// UndecryptableText is the placeholder body of a message that could not be decrypted.
+const UndecryptableText = "[message could not be decrypted]"
+
+// decrypt opens one message. On failure it returns the placeholder message (Undecryptable=true)
+// together with the error, so list paths can keep going and single-message paths can decide.
 func (s *Service) decrypt(m db.Message) (PlainMessage, error) {
-	pt, err := s.Box.Open(m.BodyCiphertext, m.DekRef, aad(m.ConversationID))
-	if err != nil {
-		return PlainMessage{}, fmt.Errorf("decrypt message %d: %w", m.ID, err)
-	}
-	pm := PlainMessage{ID: m.ID, Direction: string(m.Direction), SenderType: string(m.SenderType), Text: string(pt), SentAt: m.SentAt}
+	pm := PlainMessage{ID: m.ID, Direction: string(m.Direction), SenderType: string(m.SenderType), SentAt: m.SentAt}
 	if m.OperatorID.Valid {
 		id := m.OperatorID.Int64
 		pm.OperatorID = &id
 	}
+	pt, err := s.Box.Open(m.BodyCiphertext, m.DekRef, aad(m.ConversationID))
+	if err != nil {
+		pm.Text, pm.Undecryptable = UndecryptableText, true
+		return pm, fmt.Errorf("decrypt message %d: %w", m.ID, err)
+	}
+	pm.Text = string(pt)
 	return pm, nil
 }
 
-// History returns up to limit messages in chronological order.
+// History returns up to limit messages in chronological order. A message that fails to decrypt is
+// logged with its id and returned as a placeholder (Undecryptable=true); it never fails the list.
 func (s *Service) History(ctx context.Context, convID int64, limit int32) ([]PlainMessage, error) {
 	rows, err := s.Q.ListRecentMessages(ctx, db.ListRecentMessagesParams{ConversationID: convID, Limit: limit})
 	if err != nil {
@@ -188,11 +230,31 @@ func (s *Service) History(ctx context.Context, convID int64, limit int32) ([]Pla
 	for i := len(rows) - 1; i >= 0; i-- {
 		pm, err := s.decrypt(rows[i])
 		if err != nil {
-			return nil, err
+			// Once per message per process at ERROR: the console polls History every few seconds.
+			lvl := slog.LevelDebug
+			if _, seen := undecryptableLogged.LoadOrStore(rows[i].ID, true); !seen {
+				lvl = slog.LevelError
+			}
+			s.Log.Log(ctx, lvl, "message could not be decrypted; shown as placeholder", "conversation_id", convID,
+				"message_id", rows[i].ID, "dek_ref", rows[i].DekRef, "err", err)
 		}
 		out = append(out, pm)
 	}
 	return out, nil
+}
+
+// undecryptableLogged holds the ids of messages already reported as undecryptable (log once).
+var undecryptableLogged sync.Map
+
+// readable drops undecryptable messages: only real text may reach an LLM prompt or a classifier.
+func readable(hist []PlainMessage) []PlainMessage {
+	out := make([]PlainMessage, 0, len(hist))
+	for _, m := range hist {
+		if !m.Undecryptable {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // ---- operator actions (FR-5) ----
@@ -246,7 +308,7 @@ func (s *Service) OperatorSend(ctx context.Context, convID, operatorID int64, te
 	if text == "" || len(text) > 4000 {
 		return PlainMessage{}, fmt.Errorf("%w: text must be 1-4000 characters", ErrBadRequest)
 	}
-	conv, err := s.Q.GetConversation(ctx, convID)
+	conv, err := s.conversation(ctx, convID)
 	if err != nil {
 		return PlainMessage{}, notFound(err)
 	}
@@ -262,6 +324,9 @@ func (s *Service) OperatorSend(ctx context.Context, convID, operatorID int64, te
 		return PlainMessage{}, err
 	}
 	rid := randomInt63()
+	if !conv.ScammerPeerRef.Valid {
+		return PlainMessage{}, fmt.Errorf("conversation %d: scammer reply address is unavailable (not decryptable)", conv.ID)
+	}
 	if err := sender.Send(ctx, acct.ID, conv.ScammerPeerRef.String, text, rid); err != nil {
 		return PlainMessage{}, err
 	}
@@ -270,7 +335,8 @@ func (s *Service) OperatorSend(ctx context.Context, convID, operatorID int64, te
 	if err != nil {
 		return PlainMessage{}, err
 	}
-	return s.decrypt(m)
+	pm, _ := s.decrypt(m) // just sealed with the same key; a failure would show as the placeholder
+	return pm, nil
 }
 
 // SenderFor picks the outbound sender for an account: the simulator for "sim:" accounts,

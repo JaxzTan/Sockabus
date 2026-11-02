@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/contrib/middleware/floodwait"
@@ -36,7 +38,16 @@ type Config struct {
 	OnlyFrom map[string]bool
 	// TestDC 1-3 connects to Telegram's test network instead of production (development only).
 	TestDC int
-	Log    *slog.Logger
+	// KumaPushURL, when set, is an Uptime Kuma push monitor URL fetched every 60 s while an
+	// account is connected (TR-20). Kuma alerts when the pushes stop.
+	KumaPushURL string
+	Log         *slog.Logger
+	// Health, when set, is called on connector events (TRD G-10): connected, disconnected,
+	// unauthorized, banned. It must not block for long (the caller records it best effort).
+	Health func(ctx context.Context, accountID int64, event string, detail map[string]any)
+	// State, when set, returns the persistent update state for an account (TRD G-9). Nil keeps
+	// gotd's in-memory state (messages sent while the app is down are not replayed).
+	State func(accountID int64) updates.StateStorage
 }
 
 // Account is the subset of honeypot_accounts the connector needs.
@@ -55,6 +66,7 @@ type conn struct {
 	ready  chan struct{}
 	once   sync.Once
 	cancel context.CancelFunc
+	online atomic.Bool // true while the MTProto session is authorized and receiving updates
 }
 
 func (c *conn) markReady(api *tg.Client, self int64) {
@@ -69,8 +81,9 @@ type Manager struct {
 	handler gateway.InboundHandler
 	log     *slog.Logger
 
-	mu    sync.Mutex
-	conns map[int64]*conn
+	mu      sync.Mutex
+	conns   map[int64]*conn
+	lastMsg atomic.Int64 // unix nanos of the last routed private message; 0 = none since start
 }
 
 func NewManager(cfg Config, h gateway.InboundHandler) (*Manager, error) {
@@ -132,6 +145,23 @@ func (m *Manager) Stop(accountID int64) {
 	}
 }
 
+// Status reports whether any account is connected and when the last private message was
+// received (zero if none since start). It feeds GET /internal/status (NFR-9).
+func (m *Manager) Status() (connected bool, lastMessageAt time.Time) {
+	m.mu.Lock()
+	for _, c := range m.conns {
+		if c.online.Load() {
+			connected = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if n := m.lastMsg.Load(); n != 0 {
+		lastMessageAt = time.Unix(0, n).UTC()
+	}
+	return connected, lastMessageAt
+}
+
 var errUnauthorized = errors.New("telegram: session is not authorized")
 
 // runLoop keeps one account connected, reconnecting with backoff on network errors.
@@ -145,12 +175,18 @@ func (m *Manager) runLoop(ctx context.Context, c *conn, sessionPath string) {
 			return
 		}
 		if errors.Is(err, errUnauthorized) || tgerr.Is(err, "AUTH_KEY_UNREGISTERED", "SESSION_REVOKED", "USER_DEACTIVATED", "USER_DEACTIVATED_BAN", "AUTH_KEY_DUPLICATED") {
+			event := "unauthorized"
+			if tgerr.Is(err, "USER_DEACTIVATED", "USER_DEACTIVATED_BAN") {
+				event = "banned"
+			}
+			m.health(ctx, c.acct.ID, event, map[string]any{"error": err.Error()})
 			lg.Error("telegram account stopped: re-login needed or account banned", "err", err)
 			m.mu.Lock()
 			delete(m.conns, c.acct.ID)
 			m.mu.Unlock()
 			return
 		}
+		m.health(ctx, c.acct.ID, "disconnected", map[string]any{"error": errText(err), "retry_in_s": int(backoff.Seconds())})
 		lg.Warn("telegram connection lost, reconnecting", "err", err, "in", backoff)
 		select {
 		case <-ctx.Done():
@@ -163,7 +199,11 @@ func (m *Manager) runLoop(ctx context.Context, c *conn, sessionPath string) {
 
 func (m *Manager) runOnce(ctx context.Context, c *conn, sessionPath string, lg *slog.Logger) error {
 	dispatcher := tg.NewUpdateDispatcher()
-	gaps := updates.New(updates.Config{Handler: dispatcher, UserAccessHasher: c.hashes})
+	ucfg := updates.Config{Handler: dispatcher, UserAccessHasher: c.hashes}
+	if m.cfg.State != nil {
+		ucfg.Storage = m.cfg.State(c.acct.ID)
+	}
+	gaps := updates.New(ucfg)
 	opts := telegram.Options{
 		SessionStorage: &session.FileStorage{Path: sessionPath},
 		UpdateHandler:  gaps,
@@ -187,9 +227,71 @@ func (m *Manager) runOnce(ctx context.Context, c *conn, sessionPath string, lg *
 		}
 		c.gaps = gaps
 		c.markReady(client.API(), status.User.ID)
+		c.online.Store(true)
+		defer c.online.Store(false)
+		hbCtx, stopHeartbeat := context.WithCancel(ctx)
+		defer stopHeartbeat() // stop pushing as soon as this connection ends
+		go m.heartbeat(hbCtx, lg)
 		lg.Info("telegram account connected", "user_id", status.User.ID, "username", status.User.Username)
+		m.health(ctx, c.acct.ID, "connected", map[string]any{"user_id": status.User.ID})
 		return gaps.Run(ctx, client.API(), status.User.ID, updates.AuthOptions{})
 	})
+}
+
+// health reports a connector event to Config.Health, if set.
+func (m *Manager) health(ctx context.Context, accountID int64, event string, detail map[string]any) {
+	if m.cfg.Health != nil {
+		m.cfg.Health(ctx, accountID, event, detail)
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// heartbeatEvery is the Uptime Kuma push interval (TR-20: alert within 2 min = 60 s + 1 retry).
+var heartbeatEvery = 60 * time.Second
+
+// heartbeat pushes to KumaPushURL now and every heartbeatEvery until ctx ends. A no-op when the
+// URL is unset. The URL carries Kuma's push token, so it is never logged.
+func (m *Manager) heartbeat(ctx context.Context, lg *slog.Logger) {
+	if m.cfg.KumaPushURL == "" {
+		return
+	}
+	push := func() {
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(rctx, http.MethodGet, m.cfg.KumaPushURL, nil)
+		if err != nil {
+			lg.Warn("uptime heartbeat: bad SOCKABUS_KUMA_TG_PUSH_URL")
+			return
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if ctx.Err() == nil {
+				lg.Warn("uptime heartbeat failed", "err", errors.Unwrap(err))
+			}
+			return
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			lg.Warn("uptime heartbeat rejected", "status", res.StatusCode)
+		}
+	}
+	push()
+	t := time.NewTicker(heartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			push()
+		}
+	}
 }
 
 func (m *Manager) onMessage(ctx context.Context, c *conn, e tg.Entities, mc tg.MessageClass, lg *slog.Logger) {
@@ -241,6 +343,7 @@ func (m *Manager) onMessage(ctx context.Context, c *conn, e tg.Entities, mc tg.M
 		return
 	}
 
+	m.lastMsg.Store(time.Now().UnixNano())
 	in := gateway.Inbound{
 		Channel:      gateway.ChannelTelegram,
 		AccountID:    c.acct.ID,

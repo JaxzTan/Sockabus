@@ -2,16 +2,35 @@
 -- entity_sightings and verifications are append-only.
 
 -- name: UpsertEntity :one
--- Dedupe on uq_entity (TR-6). Confidence only rises, and extraction can never set 'high' (FR-9).
-INSERT INTO entities (type, value_normalized, bank_or_chain, confidence, first_seen, last_seen)
-VALUES (
-    sqlc.arg(type), sqlc.arg(value_normalized), sqlc.narg(bank_or_chain),
-    LEAST(sqlc.arg(confidence)::confidence_level, 'medium'), now(), now()
+-- Dedupe on (type, value_normalized, upper(bank_or_chain)) (TR-6). New rows are written upper case;
+-- older lower-case rows ('telegram', 'tron') are matched case-insensitively and reused, never
+-- rewritten, so no duplicate entity appears for the same handle/wallet. Confidence only rises, and
+-- extraction can never set 'high' (FR-9). The ON CONFLICT covers two concurrent first sightings.
+WITH existing AS (
+    SELECT e.id FROM entities e
+    WHERE e.type = sqlc.arg(type) AND e.value_normalized = sqlc.arg(value_normalized)
+      AND upper(e.bank_or_chain) IS NOT DISTINCT FROM upper(sqlc.narg(bank_or_chain)::text)
+    ORDER BY e.id
+    LIMIT 1
+), updated AS (
+    UPDATE entities
+    SET last_seen = now(),
+        confidence = GREATEST(entities.confidence, LEAST(sqlc.arg(confidence)::confidence_level, 'medium'))
+    WHERE entities.id = (SELECT id FROM existing)
+    RETURNING entities.*
+), inserted AS (
+    INSERT INTO entities (type, value_normalized, bank_or_chain, confidence, first_seen, last_seen)
+    SELECT sqlc.arg(type), sqlc.arg(value_normalized), sqlc.narg(bank_or_chain),
+           LEAST(sqlc.arg(confidence)::confidence_level, 'medium'), now(), now()
+    WHERE NOT EXISTS (SELECT 1 FROM existing)
+    ON CONFLICT ON CONSTRAINT uq_entity DO UPDATE
+    SET last_seen = now(),
+        confidence = GREATEST(entities.confidence, LEAST(EXCLUDED.confidence, 'medium'))
+    RETURNING entities.*
 )
-ON CONFLICT ON CONSTRAINT uq_entity DO UPDATE
-SET last_seen = now(),
-    confidence = GREATEST(entities.confidence, LEAST(EXCLUDED.confidence, 'medium'))
-RETURNING *;
+SELECT id, type, value_normalized, bank_or_chain, confidence, status, sightings_count, first_seen, last_seen FROM updated
+UNION ALL
+SELECT id, type, value_normalized, bank_or_chain, confidence, status, sightings_count, first_seen, last_seen FROM inserted;
 
 -- name: InsertSighting :one
 -- Records one sighting and bumps the denormalised count. Returns no row if this message was already counted.
@@ -29,10 +48,16 @@ SELECT * FROM s;
 SELECT * FROM entities WHERE id = $1;
 
 -- name: LookupEntity :one
--- Lookup API fallback when Redis misses (TR-10). Rejected entities never match.
+-- Lookup API fallback when Redis misses (TR-10). Rejected entities never match. bank_or_chain is
+-- compared case-insensitively: rows written before the upper-case rule may be lower case.
 SELECT * FROM entities
-WHERE type = $1 AND value_normalized = $2 AND bank_or_chain IS NOT DISTINCT FROM sqlc.narg(bank_or_chain)
-  AND status <> 'rejected';
+WHERE type = sqlc.arg(type) AND value_normalized = sqlc.arg(value_normalized)
+  AND upper(bank_or_chain) IS NOT DISTINCT FROM upper(sqlc.narg(bank_or_chain)::text)
+  -- Lookup policy A: bank accounts and wallets (what banks freeze on) match only once an operator
+  -- has verified them; phones, URLs and handles also match while unverified (status is returned).
+  AND (status = 'verified' OR (type NOT IN ('bank_account', 'wallet') AND status <> 'rejected'))
+ORDER BY (status = 'verified') DESC, id
+LIMIT 1;
 
 -- name: LookupEntitiesBatch :many
 -- Batch lookup, up to 100 per request (FR-10). Arrays are matched by position.
@@ -42,8 +67,8 @@ JOIN (
     SELECT unnest(sqlc.arg(types)::text[])::entity_type AS type,
            unnest(sqlc.arg(values)::text[]) AS value,
            unnest(sqlc.arg(banks)::text[]) AS bank -- '' = no bank/chain
-) AS q ON e.type = q.type AND e.value_normalized = q.value AND e.bank_or_chain IS NOT DISTINCT FROM NULLIF(q.bank, '')
-WHERE e.status <> 'rejected';
+) AS q ON e.type = q.type AND e.value_normalized = q.value AND upper(e.bank_or_chain) IS NOT DISTINCT FROM upper(NULLIF(q.bank, ''))
+WHERE (e.status = 'verified' OR (e.type NOT IN ('bank_account', 'wallet') AND e.status <> 'rejected')); -- lookup policy A, see LookupEntity
 
 -- name: EntityScamTypes :many
 SELECT DISTINCT c.scam_type::scam_type AS scam_type

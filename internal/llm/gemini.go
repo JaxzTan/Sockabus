@@ -126,15 +126,15 @@ func (g *Gemini) Generate(ctx context.Context, req Request) (string, error) {
 
 	res, err := g.HTTP.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("gemini: %w", err)
+		return "", transportError("gemini", err)
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
-		return "", fmt.Errorf("gemini: read body: %w", err)
+		return "", transportError("gemini", err)
 	}
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini: HTTP %d: %s", res.StatusCode, apiErrorMessage(data))
+		return "", httpError("gemini", res, apiErrorMessage(data))
 	}
 	return parseGemini(data)
 }

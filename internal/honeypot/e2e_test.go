@@ -228,7 +228,7 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 			wallet = e
 		}
 	}
-	if wallet.ID == 0 || wallet.BankOrChain.String != "tron" || wallet.Confidence == db.ConfidenceLevelHigh {
+	if wallet.ID == 0 || wallet.BankOrChain.String != "TRON" || wallet.Confidence == db.ConfidenceLevelHigh {
 		t.Fatalf("wallet entity = %+v (must exist, chain tron, not high before verification)", wallet)
 	}
 
@@ -240,16 +240,16 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 		t.Fatalf("operator message not sent")
 	}
 
-	// 5. Lookup: unverified → medium; verified → high (FR-9).
+	// 5. Lookup policy A: an unverified wallet never matches; verified → high (FR-9).
 	res, err := svc.Lookup(ctx, LookupRequest{Type: "wallet", Value: addr, Bank: "TRC20"})
-	if err != nil || !res.Match || res.Confidence != "medium" || len(res.ScamTypes) == 0 {
-		t.Fatalf("lookup before verification = %+v, %v", res, err)
+	if err != nil || res.Match {
+		t.Fatalf("lookup before verification = %+v, %v (want no match)", res, err)
 	}
 	if _, err := svc.Verify(ctx, wallet.ID, opID, "verified", "e2e"); err != nil {
 		t.Fatal(err)
 	}
 	res, _ = svc.Lookup(ctx, LookupRequest{Type: "wallet", Value: addr})
-	if res.Confidence != "high" || res.ScamTypes[0] != "investment" {
+	if !res.Match || res.Status != "verified" || res.Confidence != "high" || len(res.ScamTypes) == 0 || res.ScamTypes[0] != "investment" {
 		t.Fatalf("lookup after verification = %+v", res)
 	}
 

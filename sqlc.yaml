@@ -26,3 +26,29 @@ sql:
           - db_type: jsonb
             nullable: true
             go_type: encoding/json.RawMessage
+          # Ciphertext, blind-index and key-ref columns (000011, 000012) never leave the API: the service
+          # decrypts into the plaintext fields, so JSON responses keep their old shape.
+          - column: conversations.scammer_handle_ciphertext
+            go_struct_tag: json:"-"
+          - column: conversations.scammer_peer_ref_ciphertext
+            go_struct_tag: json:"-"
+          - column: conversations.scammer_peer_ref_bidx
+            go_struct_tag: json:"-"
+          - column: conversations.identifiers_dek_ref
+            go_struct_tag: json:"-"
+          - column: personas.demo_identifiers_ciphertext
+            go_struct_tag: json:"-"
+          - column: personas.demo_identifiers_dek_ref
+            go_struct_tag: json:"-"
+          - column: conversation_summaries.summary_ciphertext
+            go_struct_tag: json:"-"
+          - column: conversation_summaries.dek_ref
+            go_struct_tag: json:"-"
+          - column: persona_summaries.summary_ciphertext
+            go_struct_tag: json:"-"
+          - column: persona_summaries.dek_ref
+            go_struct_tag: json:"-"
+          - column: overview_summaries.summary_ciphertext
+            go_struct_tag: json:"-"
+          - column: overview_summaries.dek_ref
+            go_struct_tag: json:"-"

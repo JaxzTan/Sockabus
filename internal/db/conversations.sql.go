@@ -16,14 +16,14 @@ const createConversation = `-- name: CreateConversation :one
 
 INSERT INTO conversations (account_id, playbook_id, temporal_workflow_id, scammer_handle, started_at)
 VALUES ($1, $2, $3, $4, now())
-RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref
+RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref
 `
 
 type CreateConversationParams struct {
 	AccountID          int64       `json:"account_id"`
 	PlaybookID         pgtype.Int8 `json:"playbook_id"`
 	TemporalWorkflowID string      `json:"temporal_workflow_id"`
-	ScammerHandle      string      `json:"scammer_handle"`
+	ScammerHandle      pgtype.Text `json:"scammer_handle"`
 }
 
 // Conversations and messages (FR-3, FR-4, FR-5; TR-3, TR-5, TR-14). messages is append-only.
@@ -48,12 +48,16 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 		&i.LastMessageAt,
 		&i.ClosedAt,
 		&i.ScammerPeerRef,
+		&i.ScammerHandleCiphertext,
+		&i.ScammerPeerRefCiphertext,
+		&i.ScammerPeerRefBidx,
+		&i.IdentifiersDekRef,
 	)
 	return i, err
 }
 
 const getConversation = `-- name: GetConversation :one
-SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref FROM conversations WHERE id = $1
+SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref FROM conversations WHERE id = $1
 `
 
 func (q *Queries) GetConversation(ctx context.Context, id int64) (Conversation, error) {
@@ -72,20 +76,24 @@ func (q *Queries) GetConversation(ctx context.Context, id int64) (Conversation, 
 		&i.LastMessageAt,
 		&i.ClosedAt,
 		&i.ScammerPeerRef,
+		&i.ScammerHandleCiphertext,
+		&i.ScammerPeerRefCiphertext,
+		&i.ScammerPeerRefBidx,
+		&i.IdentifiersDekRef,
 	)
 	return i, err
 }
 
 const getConversationByHandle = `-- name: GetConversationByHandle :one
-SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref FROM conversations
+SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref FROM conversations
 WHERE account_id = $1 AND scammer_handle = $2 AND status <> 'closed'
 ORDER BY started_at DESC
 LIMIT 1
 `
 
 type GetConversationByHandleParams struct {
-	AccountID     int64  `json:"account_id"`
-	ScammerHandle string `json:"scammer_handle"`
+	AccountID     int64       `json:"account_id"`
+	ScammerHandle pgtype.Text `json:"scammer_handle"`
 }
 
 // Routes an inbound message to its open conversation (FR-2).
@@ -105,6 +113,10 @@ func (q *Queries) GetConversationByHandle(ctx context.Context, arg GetConversati
 		&i.LastMessageAt,
 		&i.ClosedAt,
 		&i.ScammerPeerRef,
+		&i.ScammerHandleCiphertext,
+		&i.ScammerPeerRefCiphertext,
+		&i.ScammerPeerRefBidx,
+		&i.IdentifiersDekRef,
 	)
 	return i, err
 }
@@ -169,7 +181,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (I
 }
 
 const listConversationsByStatus = `-- name: ListConversationsByStatus :many
-SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref FROM conversations
+SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref FROM conversations
 WHERE status = $1
 ORDER BY last_message_at DESC NULLS LAST
 LIMIT $2
@@ -202,6 +214,10 @@ func (q *Queries) ListConversationsByStatus(ctx context.Context, arg ListConvers
 			&i.LastMessageAt,
 			&i.ClosedAt,
 			&i.ScammerPeerRef,
+			&i.ScammerHandleCiphertext,
+			&i.ScammerPeerRefCiphertext,
+			&i.ScammerPeerRefBidx,
+			&i.IdentifiersDekRef,
 		); err != nil {
 			return nil, err
 		}
@@ -280,7 +296,7 @@ UPDATE conversations
 SET status = $1,
     closed_at = CASE WHEN $1::conversation_status = 'closed' THEN now() ELSE closed_at END
 WHERE id = $2
-RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref
+RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref
 `
 
 type SetConversationStatusParams struct {
@@ -305,6 +321,10 @@ func (q *Queries) SetConversationStatus(ctx context.Context, arg SetConversation
 		&i.LastMessageAt,
 		&i.ClosedAt,
 		&i.ScammerPeerRef,
+		&i.ScammerHandleCiphertext,
+		&i.ScammerPeerRefCiphertext,
+		&i.ScammerPeerRefBidx,
+		&i.IdentifiersDekRef,
 	)
 	return i, err
 }

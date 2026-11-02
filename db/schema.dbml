@@ -49,6 +49,10 @@ Table personas {
   status persona_status [not null, default: 'draft']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
+  profile jsonb [note: '000004: generator profile']
+  demo_identifiers jsonb [note: '000004: masked demo values; plaintext copy, NULL after the pending drop_plaintext_identifiers migration']
+  demo_identifiers_ciphertext bytea [note: '000012: AES-GCM, AAD "persona_demo_ids:<id>"']
+  demo_identifiers_dek_ref varchar(255) [note: '000012: key ref (local:v1); set iff ciphertext is']
 }
 
 Table persona_prompt_versions {
@@ -106,7 +110,12 @@ Table conversations {
   account_id bigint [not null, ref: > honeypot_accounts.id]
   playbook_id bigint [ref: > playbooks.id]
   temporal_workflow_id varchar(128) [not null, unique]
-  scammer_handle varchar(255) [not null]
+  scammer_handle varchar(255) [note: 'Plaintext copy (nullable since 000012); NULL after the pending drop_plaintext_identifiers migration']
+  scammer_peer_ref varchar(255) [note: '000004: Telegram "tg:user:<id>:<access_hash>"; plaintext copy, NULL after phase 2']
+  scammer_handle_ciphertext bytea [note: '000012: AES-GCM, AAD "conv_handle:acct:<account_id>"']
+  scammer_peer_ref_ciphertext bytea [note: '000012: AES-GCM, AAD "conv_peer_ref:acct:<account_id>"']
+  scammer_peer_ref_bidx bytea [note: '000012: HMAC-SHA256 blind index (32 bytes), key = HKDF(SOCKABUS_MESSAGE_KEY, "sockabus/blind-index/v1"); routing + uniqueness']
+  identifiers_dek_ref varchar(255) [note: '000012: key ref of the two ciphertexts']
   scam_type scam_type [note: 'Null until classifier runs (TR-7)']
   stage varchar(32) [not null, default: 'rapport']
   status conversation_status [not null, default: 'bot']
@@ -114,8 +123,9 @@ Table conversations {
   last_message_at timestamptz
   closed_at timestamptz
   indexes {
-    (account_id, scammer_handle)
+    (account_id, scammer_handle) [note: 'dropped by the pending drop_plaintext_identifiers migration']
     (status, last_message_at)
+    (account_id, scammer_peer_ref_bidx) [unique, note: '000012 conversations_open_peer_bidx_uq: WHERE status <> \'closed\' AND scammer_peer_ref_bidx IS NOT NULL']
   }
 }
 
@@ -260,4 +270,144 @@ Table webhook_deliveries {
     (status)
   }
   Note: 'TR-12 delivery log'
+}
+
+// ─────────────── Added by migrations 000006–000010 (1 Nov 2026) ───────────────
+// 000006: unique index conversations (account_id, scammer_peer_ref) WHERE status <> 'closed' (dropped in phase 2;
+//         replaced by conversations_open_peer_bidx_uq from 000012).
+// 000007: index entities (type, value_normalized, upper(bank_or_chain)); bank_or_chain is written UPPER CASE.
+
+// Append-only (NFR-8): conversation_summaries, persona_summaries, overview_summaries,
+// conversation_stage_events, account_health_events.
+
+Table conversation_summaries {
+  id bigint [pk, increment]
+  conversation_id bigint [not null, ref: > conversations.id]
+  summary text [note: 'Plaintext, pre-000011 rows only (nullable since 000011)']
+  summary_ciphertext bytea [note: '000011: AES-GCM, AAD "conv_summary:<conversation_id>"; CHECK summary or summary_ciphertext is set']
+  dek_ref varchar(255) [note: '000011: key ref; set iff summary_ciphertext is']
+  stage varchar(32) [not null]
+  scam_type scam_type
+  model varchar(100) [not null]
+  message_count_at int [not null]
+  reason varchar(16) [not null, default: 'on_demand', note: 'stage_change | every_n | on_demand']
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (conversation_id, created_at) }
+}
+
+Table persona_summaries {
+  id bigint [pk, increment]
+  persona_id bigint [not null, ref: > personas.id]
+  summary text [note: 'Plaintext, pre-000011 rows only (nullable since 000011)']
+  summary_ciphertext bytea [note: '000011: AES-GCM, AAD "persona_summary:<persona_id>"; CHECK summary or summary_ciphertext is set']
+  dek_ref varchar(255) [note: '000011: key ref; set iff summary_ciphertext is']
+  model varchar(100) [not null]
+  conversation_count_at int [not null]
+  reason varchar(16) [not null, default: 'on_demand']
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (persona_id, created_at) }
+}
+
+Table overview_summaries {
+  id bigint [pk, increment]
+  summary text [note: 'Plaintext, pre-000011 rows only (nullable since 000011)']
+  summary_ciphertext bytea [note: '000011: AES-GCM, AAD "overview_summary"; CHECK summary or summary_ciphertext is set']
+  dek_ref varchar(255) [note: '000011: key ref; set iff summary_ciphertext is']
+  model varchar(100) [not null]
+  active_personas int [not null]
+  active_conversations int [not null]
+  created_at timestamptz [not null, default: `now()`]
+}
+
+Table conversation_stage_events {
+  id bigint [pk, increment]
+  conversation_id bigint [not null, ref: > conversations.id]
+  from_stage varchar(32)
+  to_stage varchar(32) [not null]
+  from_scam_type scam_type
+  scam_type scam_type
+  source varchar(16) [not null, note: 'bot | operator | classifier']
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (conversation_id, created_at, id) }
+}
+
+Table plans {
+  id bigint [pk, increment]
+  code varchar(32) [not null, unique]
+  name varchar(100) [not null]
+  monthly_price numeric(12,2) [not null]
+  currency char(3) [not null, default: 'MYR']
+  included_lookups int [not null, default: 0]
+  overage_price numeric(12,4) [not null, default: 0, note: 'per lookup above included_lookups']
+  active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+}
+
+Table customer_subscriptions {
+  id bigint [pk, increment]
+  customer_id bigint [not null, ref: > customers.id]
+  plan_id bigint [not null, ref: > plans.id]
+  period_start timestamptz [not null]
+  period_end timestamptz [not null]
+  status varchar(16) [not null, default: 'active', note: 'trialing | active | past_due | cancelled | expired; one live per customer']
+  created_at timestamptz [not null, default: `now()`]
+  cancelled_at timestamptz
+}
+
+Table invoices {
+  id bigint [pk, increment]
+  customer_id bigint [not null, ref: > customers.id]
+  subscription_id bigint [ref: > customer_subscriptions.id]
+  period_start timestamptz [not null]
+  period_end timestamptz [not null]
+  lookup_count int [not null, default: 0, note: 'from lookup_logs']
+  included_lookups int [not null, default: 0]
+  overage_lookups int [not null, default: 0]
+  amount numeric(12,2) [not null, default: 0]
+  currency char(3) [not null, default: 'MYR']
+  status varchar(16) [not null, default: 'draft', note: 'draft | issued | paid | void']
+  issued_at timestamptz
+  paid_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (customer_id, period_start) [unique] }
+}
+
+Table telegram_update_state {
+  account_id bigint [pk, ref: - honeypot_accounts.id]
+  pts int [not null, default: 0]
+  qts int [not null, default: 0]
+  date int [not null, default: 0]
+  seq int [not null, default: 0]
+  updated_at timestamptz [not null, default: `now()`]
+}
+
+Table account_health_events {
+  id bigint [pk, increment]
+  account_id bigint [not null, ref: > honeypot_accounts.id]
+  event varchar(32) [not null, note: 'connected | disconnected | connect_error | unauthorized | banned | flood_wait | cooldown | active']
+  detail jsonb
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (account_id, created_at) }
+}
+
+// ─────────────── Added by migrations 000011–000013 (1 Nov 2026) ───────────────
+// 000011: summaries sealed (columns above). 000012: scammer identifiers sealed + blind index (columns above).
+// 000013: retention purge. buru_forbid_mutation() allows DELETE on messages, entity_sightings and the three
+// summary tables only while buru.allow_purge = 'on', which only buru_purge_expired() sets (transaction-local).
+// buru_purge_expired(retention interval, dry_run bool, requested_by text) RETURNS retention_purges:
+// SECURITY DEFINER, EXECUTE granted to NOLOGIN role buru_purge only (not buru_app, not PUBLIC).
+
+Table retention_purges {
+  id bigint [pk, increment]
+  retention interval [not null, note: 'minimum 12 months (TRD §7)']
+  cutoff timestamptz [not null]
+  dry_run boolean [not null]
+  messages_deleted bigint [not null, default: 0]
+  sightings_deleted bigint [not null, default: 0]
+  summaries_deleted bigint [not null, default: 0]
+  requested_by varchar(255) [not null, note: 'operator or job']
+  db_user varchar(255) [not null, default: `session_user`]
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (created_at) }
+  Note: 'APPEND-ONLY audit of every purge run (dry or real). buru_app: SELECT only.'
 }

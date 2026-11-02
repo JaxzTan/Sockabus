@@ -99,6 +99,7 @@ export interface ApiMessage {
   sender_type: "scammer" | "persona" | "operator";
   text: string;
   sent_at: string;
+  undecryptable?: boolean; // the API could not decrypt it; text is a placeholder
 }
 
 export interface ApiEntity {
@@ -216,7 +217,7 @@ function personaDetail(p: ApiPersona): PersonaDetail {
 const STAGE_KEYS = ["rapport", "bait", "payment_request", "stall"];
 
 export function toMessage(m: ApiMessage): Message {
-  return { who: m.sender_type, text: m.text, t: when(m.sent_at), at: Date.parse(m.sent_at) || undefined };
+  return { who: m.sender_type, text: m.text, t: when(m.sent_at), at: Date.parse(m.sent_at) || undefined, undecryptable: m.undecryptable || undefined };
 }
 
 export function toConversation(c: ApiConversation, msgs: ApiMessage[] | undefined, accounts: ApiAccount[]): Conversation {

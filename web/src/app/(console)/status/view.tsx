@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { Badge, Head, type Tone } from "@/components/ui";
 import { DEV_CHAT, useAgo } from "@/lib/hooks";
+import { plural } from "@/lib/format";
 import { isSimAccount } from "@/lib/api";
 import { activePersonas, liveConvos, toast, toggleTelegram, USE_SAMPLE, useStore, type State } from "@/lib/store";
 
@@ -98,15 +99,27 @@ export function StatusView() {
   );
 }
 
-// API mode: tiles from GET /readyz, /internal/accounts and /internal/conversations.
-// The backend has no /internal/status yet, so LLM errors, lookup latency and uptime history are not reported.
+// "14:32" today, "31 Oct 14:32" otherwise.
+const stamp = (iso: string) => {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${time}`;
+};
+
+// API mode: tiles from GET /readyz, /internal/status, /internal/accounts and /internal/conversations.
+// Lookup latency and uptime history live in the uptime monitor, not here.
 function LiveStatus({ st, ago }: { st: State; ago: string }) {
   const { data, ui } = st;
   const h = ui.health;
+  const bot = ui.bot;
   const tg = ui.accounts.filter((a) => a.channel === "telegram" && !isSimAccount(a));
   const tgActive = tg.filter((a) => a.status === "active").length;
   const lastAt = data.convos.map((c) => c.last).at(0);
-  const healthy = !!h?.ok && !ui.loadError;
+  // Accounts are bound but none holds a live Telegram session: the honeypot hears nothing.
+  const tgDown = !!bot && tgActive > 0 && !bot.telegram.connected;
+  const healthy = !!h?.ok && !ui.loadError && !tgDown;
+  const llmErrors = bot?.llm.errors_recent ?? 0;
+  const running = bot?.workflows.running;
   const checks = h ? Object.entries(h.checks) : [];
   const failing = checks.filter(([, v]) => v !== "ok").map(([k]) => k);
   // Backend down before the first load: no data, so say so instead of showing zeros.
@@ -117,40 +130,78 @@ function LiveStatus({ st, ago }: { st: State; ago: string }) {
       <div className={`overall ${healthy ? "ok" : "bad"}`} role="status">
         <span className="ic">{healthy ? "✓" : "!"}</span>
         <div className="txt">
-          <h2>{!h ? "Checking…" : healthy ? "All systems operational" : "Degraded: backend not ready"}</h2>
+          <h2>{!h ? "Checking…" : healthy ? "All systems operational" : tgDown && h.ok ? "Degraded: Telegram disconnected" : "Degraded: backend not ready"}</h2>
           <span className="muted" style={{ fontSize: 15 }}>
             Auto-refresh every 10 s · data updated {ago}
           </span>
         </div>
       </div>
       <div className="tiles">
+        {bot ? (
+          <Tile
+            id="status-telegram"
+            label="Telegram honeypot"
+            big={bot.telegram.connected ? "Connected" : tg.length ? "Disconnected" : "No accounts"}
+            sub={
+              bot.telegram.connected
+                ? `${tgActive} of ${tg.length} accounts active · heartbeat every 60 s`
+                : tg.length
+                  ? "No live Telegram session · the demo can continue on Web chat"
+                  : "Bind one with make tglogin. Web chat still works."
+            }
+            word={bot.telegram.connected ? "up" : tg.length ? "down" : "none"}
+            tone={bot.telegram.connected ? "success" : tg.length ? "danger" : "warning"}
+            bad={tgDown}
+          />
+        ) : (
+          <Tile
+            id="status-telegram"
+            label="Telegram honeypot"
+            big={none ? "Unknown" : tg.length ? `${tgActive} of ${tg.length} active` : "No accounts"}
+            sub={none ? "No data from the backend yet" : "Account status from the database · live connection state unavailable"}
+            word={none ? "n/a" : tgActive ? "up" : "none"}
+            tone={none ? "neutral" : tgActive ? "success" : "warning"}
+            bad={!none && !tgActive}
+          />
+        )}
+        {bot ? (
+          <Tile
+            id="status-last-message"
+            label="Last message received"
+            big={bot.telegram.last_message_at ? stamp(bot.telegram.last_message_at) : "None yet"}
+            sub="Last private message on Telegram since the backend started"
+            word={bot.telegram.last_message_at ? "live" : "idle"}
+            tone={bot.telegram.last_message_at ? "success" : "neutral"}
+          />
+        ) : (
+          <Tile
+            id="status-last-message"
+            label="Last message received"
+            big={none ? "Unknown" : (lastAt ?? "None yet")}
+            sub={none ? "No data from the backend yet" : "From the most recent scammer chat"}
+            word={none ? "n/a" : lastAt ? "live" : "idle"}
+            tone={!none && lastAt ? "success" : "neutral"}
+          />
+        )}
         <Tile
-          id="status-telegram"
-          label="Telegram honeypot"
-          big={none ? "Unknown" : tg.length ? `${tgActive} of ${tg.length} active` : "No accounts"}
-          sub={none ? "No data from the backend yet" : tg.length ? "Account status from the database · live connection state not reported" : "Bind one with make tglogin. Web chat still works."}
-          word={none ? "n/a" : tgActive ? "up" : "none"}
-          tone={none ? "neutral" : tgActive ? "success" : "warning"}
-          bad={!none && !tgActive}
+          id="status-llm-errors"
+          label="AI model"
+          big={bot ? plural(llmErrors, "error") : "Unknown"}
+          sub={bot ? "Failed calls after retries · last 15 minutes" : "Status endpoint unreachable"}
+          word={!bot ? "n/a" : llmErrors ? "errors" : "ok"}
+          tone={!bot ? "neutral" : llmErrors >= 5 ? "danger" : llmErrors ? "warning" : "success"}
+          bad={llmErrors >= 5}
         />
-        <Tile
-          id="status-last-message"
-          label="Last message received"
-          big={none ? "Unknown" : (lastAt ?? "None yet")}
-          sub={none ? "No data from the backend yet" : "From the most recent scammer chat"}
-          word={none ? "n/a" : lastAt ? "live" : "idle"}
-          tone={!none && lastAt ? "success" : "neutral"}
-        />
-        <Tile id="status-llm-errors" label="AI model" big="Not reported" sub="Needs an error count from the backend (/internal/status)" word="n/a" tone="neutral" />
         <Tile
           id="status-workflows"
           label="Conversations running"
-          big={none ? "Unknown" : String(liveConvos(data).length)}
-          sub={none ? "No data from the backend yet" : `${activePersonas(data).length} personas active`}
-          word={none ? "n/a" : "running"}
-          tone={none ? "neutral" : "info"}
+          big={bot?.workflows.error ? "Unknown" : running != null ? String(running) : none ? "Unknown" : String(liveConvos(data).length)}
+          sub={bot?.workflows.error ? "Temporal unavailable" : running != null ? "Temporal workflows running" : none ? "No data from the backend yet" : `${activePersonas(data).length} personas active`}
+          word={bot?.workflows.error ? "down" : none && running == null ? "n/a" : "running"}
+          tone={bot?.workflows.error ? "danger" : none && running == null ? "neutral" : "info"}
+          bad={!!bot?.workflows.error}
         />
-        <Tile id="status-api" label="Lookup API" big="Not reported" sub="Try it on the Bank simulator, which shows the real time taken" word="n/a" tone="neutral" />
+        <Tile id="status-api" label="Lookup API" big="On demand" sub="Try it on the Bank simulator, which shows the real time taken" word="manual" tone="neutral" />
         <Tile
           id="status-health"
           label="Backend health"

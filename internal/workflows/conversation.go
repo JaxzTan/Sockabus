@@ -28,8 +28,8 @@ const (
 	ActSendReply         = "SendReply"
 	ActCloseConversation = "CloseConversation"
 
-	// MinReplyDelay is the hard floor from FR-3: no reply faster than 10 s after the scammer's
-	// latest message, whatever the configuration says.
+	// MinReplyDelay is the default floor from FR-3: no reply faster than 10 s after the scammer's
+	// latest message. Timing.MinDelay (SOCKABUS_REPLY_DELAY_MIN) lowers it for CI and tests only.
 	MinReplyDelay = 10 * time.Second
 
 	maxLoopsBeforeContinueAsNew = 300
@@ -37,7 +37,8 @@ const (
 
 // Timing controls how human the persona feels. Zero values take defaults.
 type Timing struct {
-	ReadMin        time.Duration // delay before starting to reply to a new burst (≥ MinReplyDelay)
+	MinDelay       time.Duration // floor between the scammer's latest message and any reply; 0 = MinReplyDelay
+	ReadMin        time.Duration // delay before starting to reply to a new burst (≥ MinDelay)
 	ReadMax        time.Duration
 	BurstGap       time.Duration // keep waiting while the scammer is still sending
 	CharsPerSecond float64       // typing speed used to size the "typing…" phase
@@ -47,8 +48,11 @@ type Timing struct {
 }
 
 func (t Timing) WithDefaults() Timing {
-	if t.ReadMin < MinReplyDelay {
-		t.ReadMin = MinReplyDelay
+	if t.MinDelay <= 0 {
+		t.MinDelay = MinReplyDelay
+	}
+	if t.ReadMin < t.MinDelay {
+		t.ReadMin = t.MinDelay
 	}
 	if t.ReadMax < t.ReadMin {
 		t.ReadMax = t.ReadMin + 35*time.Second
@@ -272,8 +276,8 @@ func ConversationWorkflow(ctx workflow.Context, in ConversationInput) error {
 			}
 			cancelTyping()
 
-			// FR-3 hard floor: never send sooner than 10 s after the latest scammer message.
-			if wait := st.lastInbound.Add(MinReplyDelay).Sub(workflow.Now(ctx)); wait > 0 {
+			// FR-3 floor: never send sooner than MinDelay (10 s outside CI) after the latest scammer message.
+			if wait := st.lastInbound.Add(t.MinDelay).Sub(workflow.Now(ctx)); wait > 0 {
 				_ = workflow.Sleep(ctx, wait)
 			}
 

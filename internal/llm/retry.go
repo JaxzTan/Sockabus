@@ -44,12 +44,31 @@ func (r Retrying) Generate(ctx context.Context, req Request) (string, error) {
 		if ctx.Err() != nil || errors.Is(err, ErrBlocked) || (!stalled && !retryable(err)) {
 			return "", err
 		}
+		// Honour the provider's retry-after when it fits in the caller's remaining time;
+		// otherwise give up now so the caller can report "retry in N s" instead of timing out.
+		if u, ok := AsUpstream(err); ok && u.RetryAfter > r.Backoff {
+			if dl, has := ctx.Deadline(); has && time.Until(dl) < u.RetryAfter {
+				return "", err
+			}
+			if u.RetryAfter > 5*time.Second {
+				return "", err // too long to wait inside one request
+			}
+			select {
+			case <-ctx.Done():
+				return "", err
+			case <-time.After(u.RetryAfter - r.Backoff):
+			}
+		}
 	}
 	return "", lastErr
 }
 
-// retryable reports transient API errors: rate limits, server errors and dropped connections.
+// retryable reports transient API errors: rate limits, overload, server errors and dropped
+// connections. Typed provider errors decide by Kind; the string check covers anything else.
 func retryable(err error) bool {
+	if u, ok := AsUpstream(err); ok {
+		return u.Temporary()
+	}
 	s := err.Error()
 	for _, code := range []string{"HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504", "connection reset", "EOF", "timeout"} {
 		if strings.Contains(s, code) {

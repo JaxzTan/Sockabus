@@ -35,3 +35,28 @@ func TestBadKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestBlindIndex(t *testing.T) {
+	k1 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	k2 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32))
+	b1, _ := New(k1)
+	b1again, _ := New(k1)
+	b2, _ := New(k2)
+	v := []byte("tg:user:12345:987654321")
+	i1 := b1.BlindIndex("peer_ref", v)
+	if len(i1) != 32 {
+		t.Fatalf("len = %d, want 32", len(i1))
+	}
+	if !bytes.Equal(i1, b1again.BlindIndex("peer_ref", v)) {
+		t.Fatal("blind index must be deterministic for the same key")
+	}
+	if bytes.Equal(i1, b2.BlindIndex("peer_ref", v)) {
+		t.Fatal("different keys must give different indexes")
+	}
+	if bytes.Equal(i1, b1.BlindIndex("handle", v)) {
+		t.Fatal("different domains must give different indexes")
+	}
+	if bytes.Equal(i1, b1.BlindIndex("peer_ref", []byte("tg:user:12345:987654322"))) {
+		t.Fatal("different values must give different indexes")
+	}
+}

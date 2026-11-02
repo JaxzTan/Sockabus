@@ -14,6 +14,7 @@ const OPERATE = [
   { href: "/verify", label: "Verify queue", id: "verify" },
   { href: "/entities", label: "Entities", id: "entities" },
   { href: "/status", label: "Status", id: "status" },
+  { href: "/automate", label: "Automate", id: "automate" },
 ];
 const DEMO = [
   { href: "/demo/bank", label: "Bank simulator", id: "bank" },

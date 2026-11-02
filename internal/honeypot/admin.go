@@ -57,6 +57,7 @@ func (s *Service) Personas(ctx context.Context) ([]PersonaView, error) {
 }
 
 func (s *Service) personaView(ctx context.Context, p db.Persona) (PersonaView, error) {
+	s.revealPersona(&p)
 	v := PersonaView{Persona: p, ScamTypes: []string{}}
 	if pv, err := s.Q.LatestPromptVersion(ctx, p.ID); err == nil {
 		v.PromptVersion = int(pv.Version)
@@ -191,7 +192,11 @@ func (s *Service) GeneratePersonas(ctx context.Context, req persona.GenerateRequ
 	for _, r := range rows {
 		existing = append(existing, persona.ExistingFromProfile(r.Name, int(r.Age.Int16), r.Profile))
 	}
-	gen, notes, err := persona.Generate(ctx, s.PersonaLLM, req, existing, s.Now(), rand.New(rand.NewSource(time.Now().UnixNano())))
+	client := s.GenLLM
+	if client == nil {
+		client = s.PersonaLLM
+	}
+	gen, notes, err := persona.Generate(ctx, client, req, existing, s.Now(), rand.New(rand.NewSource(time.Now().UnixNano())))
 	if err != nil {
 		return nil, notes, err
 	}
@@ -205,9 +210,12 @@ func (s *Service) GeneratePersonas(ctx context.Context, req persona.GenerateRequ
 			created, err = q.CreatePersonaWithProfile(ctx, db.CreatePersonaWithProfileParams{
 				Name: g.Persona.Name, Age: pgtype.Int2{Int16: int16(g.Persona.Age), Valid: true}, LanguageMix: mix,
 				Backstory: pgtype.Text{String: g.Persona.Backstory, Valid: g.Persona.Backstory != ""}, WealthProfile: nullJSON(g.Persona.WealthProfile),
-				Status: db.PersonaStatusDraft, Profile: nullJSON(g.Profile), DemoIdentifiers: nullJSON(g.DemoIdentifiers),
+				Status: db.PersonaStatusDraft, Profile: nullJSON(g.Profile), DemoIdentifiers: s.plaintextJSONOrNull(nullJSON(g.DemoIdentifiers)),
 			})
 			if err != nil {
+				return err
+			}
+			if err := s.sealPersonaDemoIDs(ctx, q, created.ID, nullJSON(g.DemoIdentifiers)); err != nil {
 				return err
 			}
 			_, err = q.CreatePromptVersion(ctx, db.CreatePromptVersionParams{PersonaID: created.ID, SystemPrompt: g.PromptVersion.SystemPrompt, CreatedBy: opID(operatorID)})
@@ -257,8 +265,17 @@ func (s *Service) SetAccountStatus(ctx context.Context, id int64, status string,
 	if !st.Valid() {
 		return fmt.Errorf("%w: status must be active, banned or cooldown", ErrBadRequest)
 	}
-	_, err := s.Q.SetAccountStatus(ctx, db.SetAccountStatusParams{ID: id, Status: st, CooldownUntil: cooldownUntil})
-	return err
+	prev, err := s.Q.GetHoneypotAccount(ctx, id)
+	if err != nil {
+		return notFound(err)
+	}
+	if _, err := s.Q.SetAccountStatus(ctx, db.SetAccountStatusParams{ID: id, Status: st, CooldownUntil: cooldownUntil}); err != nil {
+		return notFound(err)
+	}
+	if prev.Status != st {
+		s.RecordAccountHealth(ctx, id, healthEventForStatus(st), map[string]any{"from": prev.Status, "to": st, "source": "operator", "cooldown_until": cooldownUntil})
+	}
+	return nil
 }
 
 // ---- conversations (operator console) ----
@@ -270,11 +287,11 @@ type ConversationDetail struct {
 }
 
 func (s *Service) Conversation(ctx context.Context, id int64) (ConversationDetail, error) {
-	conv, err := s.Q.GetConversation(ctx, id)
+	conv, err := s.conversation(ctx, id)
 	if err != nil {
 		return ConversationDetail{}, notFound(err)
 	}
-	msgs, err := s.History(ctx, id, 500)
+	msgs, err := s.History(ctx, id, 500) // undecryptable messages come back as placeholders
 	if err != nil {
 		return ConversationDetail{}, err
 	}
@@ -315,6 +332,7 @@ type LookupRequest struct {
 type LookupResponse struct {
 	Match      bool       `json:"match"`
 	Confidence string     `json:"confidence,omitempty"`
+	Status     string     `json:"status,omitempty"` // verified | unverified (unverified only for phone, url, handle)
 	ScamTypes  []string   `json:"scam_types,omitempty"`
 	FirstSeen  *time.Time `json:"first_seen,omitempty"`
 	LastSeen   *time.Time `json:"last_seen,omitempty"`
@@ -351,7 +369,7 @@ func (s *Service) Lookup(ctx context.Context, req LookupRequest) (LookupResponse
 		scam = append(scam, string(st))
 	}
 	first, last := e.FirstSeen.UTC(), e.LastSeen.UTC()
-	return LookupResponse{Match: true, Confidence: conf, ScamTypes: scam, FirstSeen: &first, LastSeen: &last, Sightings: e.SightingsCount}, nil
+	return LookupResponse{Match: true, Confidence: conf, Status: string(e.Status), ScamTypes: scam, FirstSeen: &first, LastSeen: &last, Sightings: e.SightingsCount}, nil
 }
 
 // lookupBank returns the bank/chain to match: the caller's, or for wallets the chain implied by
@@ -361,12 +379,12 @@ func lookupBank(typ, value, bank string) string {
 		return b
 	}
 	if strings.HasPrefix(value, "0x") {
-		return "ethereum"
+		return extraction.BankOrChain("wallet", "ethereum")
 	}
-	return "tron"
+	return extraction.BankOrChain("wallet", "tron")
 }
 
-// lookupEntity uses LookupEntity's exact bank/chain match. For a bank account looked up with a
+// lookupEntity uses LookupEntity's bank/chain match (case-insensitive: older rows are lower case). For a bank account looked up with a
 // bank code it falls back to the same number stored without one: extraction can only set the bank
 // when the scammer names it next to the number.
 func (s *Service) lookupEntity(ctx context.Context, t db.EntityType, v, bank string) (db.Entity, bool, error) {

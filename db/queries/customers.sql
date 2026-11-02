@@ -73,3 +73,13 @@ RETURNING *;
 
 -- name: ListWebhookDeliveries :many
 SELECT * FROM webhook_deliveries WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2;
+
+-- name: ListCustomers :many
+SELECT * FROM customers ORDER BY id;
+
+-- name: CountLookupLogsForKey :one
+SELECT count(*) FROM lookup_logs WHERE api_key_id = $1;
+
+-- name: ListLookupLogs :many
+-- Usage detail for one customer (FR-13). Never contains the looked-up value.
+SELECT * FROM lookup_logs WHERE customer_id = $1 ORDER BY ts DESC, id DESC LIMIT $2;
