@@ -115,6 +115,9 @@ jobs:
       # Schema first: with the Telegram connector on, the app reads honeypot_accounts at startup.
       - name: Start PostgreSQL, migrate and seed
         run: |
+          # web bind-mounts these; on Linux Docker would create missing ones as root and Playwright
+          # (runner user) could then not write its results, report or traces.
+          mkdir -p tests/results playwright-report test-results
           docker compose up -d --wait postgres
           docker compose --profile tools run --rm migrate
           docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U buru -d buru < db/seed/001_demo.sql
