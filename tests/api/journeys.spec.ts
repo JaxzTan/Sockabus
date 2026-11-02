@@ -38,7 +38,8 @@ test.afterAll(async () => {
 
 const stageOf = async (convId: number) => ((await (await api.get(`/internal/conversations/${convId}`)).json()) as ConversationDetail).conversation.stage;
 
-test("a. generate personas: one click creates a full persona with real fields", async () => {
+// @live: needs the real LLM (CI runs the fake one). CI excludes @live; local runs and the monitor do not.
+test("a. generate personas: one click creates a full persona with real fields", { tag: "@live" }, async () => {
   test.setTimeout(360_000);
   let id = 0;
   let generated: { id: number; name: string; age: number; status: string; summary: string };
@@ -89,7 +90,8 @@ test("a. generate personas: one click creates a full persona with real fields", 
   });
 });
 
-test("b. Telegram backend: list and connect accounts, read a Telegram chat", async () => {
+// @live: needs a logged-in Telegram number (SMS login, impossible in CI).
+test("b. Telegram backend: list and connect accounts, read a Telegram chat", { tag: "@live" }, async () => {
   let tg: Account | undefined;
 
   await test.step("GET /internal/accounts lists a real (non-simulated) Telegram account", async () => {
