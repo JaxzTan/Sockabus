@@ -1,5 +1,5 @@
 // Playwright results for /automate (server only: imported by the /api/automate routes, never by the browser).
-// Reads the JSON reporter output written by playwright.config.ts and archived by scripts/e2e-monitor.sh:
+// Reads the JSON reporter output written by playwright.config.ts and archived by playwright/scripts/e2e-monitor.sh:
 //   <results>/latest.json             the last run (any `playwright test`, manual or monitor)
 //   <results>/history/<UTC ts>.json   one file per monitor run (last 50)
 //   <results>/history/<UTC ts>.files/ that run's screenshots (copied out of test-results/)

@@ -1,10 +1,10 @@
 // Command e2e-launcher is the program the e2e monitor's launchd LaunchAgent runs
-// (scripts/e2e-monitor-schedule.sh installs it outside the repo). The repo lives in iCloud Drive, which
+// (playwright/scripts/e2e-monitor-schedule.sh installs it outside the repo). The repo lives in iCloud Drive, which
 // macOS privacy protection (TCC) closes to background jobs, so a LaunchAgent running /bin/bash directly
 // gets "Operation not permitted". Granting Full Disk Access to this one binary, instead of to /bin/bash,
 // lets the scheduled run read the repo; the script it starts inherits the grant.
 //
-//	e2e-launcher <path to scripts/e2e-monitor.sh>
+//	e2e-launcher <path to playwright/scripts/e2e-monitor.sh>
 //
 // When the script can't be opened, it shows a macOS notification saying what to grant and exits 126.
 package main

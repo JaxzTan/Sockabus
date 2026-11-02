@@ -136,8 +136,8 @@ been applied to Supabase: run `make db-check` first.
 
 Each run makes its own persona, scammer and account number, then closes the conversation and retires
 the persona, so reruns pass on the same database. Settings and commands are in
-[playwright/README.md](../playwright/README.md). Playwright lives in `playwright/` (config `playwright/playwright.config.ts`; deps in root
-`package.json`), version 1.64.1.
+[playwright/README.md](../playwright/README.md). Playwright is a self-contained project in `playwright/` (its own `package.json`,
+`Makefile`, config and scripts), version 1.64.1.
 
 **CI job `e2e`** (`.github/workflows/ci.yml`): writes a throwaway `.env` (fake LLM, local Postgres,
 fresh keys), starts the Compose stack, waits for `/readyz` and the console, migrates and seeds, runs
@@ -171,7 +171,7 @@ GitHub yet.
 2. `cd web && pnpm lint && pnpm build`
 3. `make test-db DATABASE_URL=` (local database)
 4. Playwright against a local backend started with the settings in [playwright/README.md](../playwright/README.md):
-   `pnpm test:e2e`
+   `cd playwright && pnpm test:e2e`
 5. `docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app config --quiet`
    (needs `SOCKABUS_DOMAIN` set)
 
@@ -193,5 +193,5 @@ GitHub yet.
    not "Unknown". (Kuma alerting waits for the VPS.)
 5. Rehearse the whole demo twice: generate persona → chat (Telegram, then the web chat fallback) →
    takeover → verify the bank account → bank simulator returns a hold → status page.
-6. Run `pnpm test:api` against the demo stack once, using a throwaway persona. The test rows stay in
+6. Run `cd playwright && pnpm test:api` against the demo stack once, using a throwaway persona. The test rows stay in
    the database, so do this only if that's acceptable on Supabase.

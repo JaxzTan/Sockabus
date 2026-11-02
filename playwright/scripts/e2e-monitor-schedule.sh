@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Schedules scripts/e2e-monitor.sh (playwright/README.md "Monitoring"). Used by the Makefile:
+# Schedules playwright/scripts/e2e-monitor.sh (playwright/README.md "Monitoring"). Used by the Makefile:
 #
-#   scripts/e2e-monitor-schedule.sh install [minutes] [cron|launchd]   default: 60, cron
-#   scripts/e2e-monitor-schedule.sh uninstall                          removes both mechanisms
-#   scripts/e2e-monitor-schedule.sh status                             schedule + last run summary
+#   playwright/scripts/e2e-monitor-schedule.sh install [minutes] [cron|launchd]   default: 60, cron
+#   playwright/scripts/e2e-monitor-schedule.sh uninstall                          removes both mechanisms
+#   playwright/scripts/e2e-monitor-schedule.sh status                             schedule + last run summary
 #
 # cron: one crontab line tagged "# sockabus-e2e-monitor"; every other crontab line is kept as is.
 # launchd: ~/Library/LaunchAgents/com.sockabus.e2e-monitor.plist (StartInterval) running the small
@@ -14,12 +14,13 @@
 # the repo, so a blocked run still leaves a trace. The run's own log is playwright/results/monitor.log.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+PW=$(cd "$(dirname "$0")/.." && pwd)   # playwright/
+ROOT=$(cd "$PW/.." && pwd)            # repo root
 TAG="# sockabus-e2e-monitor"
 LABEL=com.sockabus.e2e-monitor
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 OUT="$HOME/Library/Logs/sockabus-e2e-monitor.log"
-SCRIPT="$ROOT/scripts/e2e-monitor.sh"
+SCRIPT="$PW/scripts/e2e-monitor.sh"
 # launchd runs this binary (cmd/e2e-launcher), not /bin/bash: Full Disk Access is granted to it alone.
 LAUNCHER="$HOME/Library/Application Support/Sockabus/e2e-launcher"
 
@@ -140,16 +141,16 @@ status() {
   fi
   [ "$any" = 1 ] || echo "  none (make monitor-install)"
   echo "last monitor run:"
-  local last; last=$(ls -1 "$ROOT"/playwright/results/history/*.json 2>/dev/null | sort | tail -n1 || true)
+  local last; last=$(ls -1 "$PW"/results/history/*.json 2>/dev/null | sort | tail -n1 || true)
   if [ -n "$last" ]; then
     jq -r --arg f "$(basename "$last")" '"  \($f): started \(.stats.startTime), passed \(.stats.expected), failed \(.stats.unexpected), skipped \(.stats.skipped), flaky \(.stats.flaky), llm \(.config.metadata.llm // "?")"' "$last"
-    echo "  runs kept: $(ls -1 "$ROOT"/playwright/results/history/*.json | wc -l | tr -d ' ')"
+    echo "  runs kept: $(ls -1 "$PW"/results/history/*.json | wc -l | tr -d ' ')"
   else
     echo "  none yet"
   fi
-  if [ -f "$ROOT/playwright/results/monitor.log" ]; then
+  if [ -f "$PW/results/monitor.log" ]; then
     echo "monitor.log (last 3 lines):"
-    tail -n 3 "$ROOT/playwright/results/monitor.log" | sed 's/^/  /'
+    tail -n 3 "$PW/results/monitor.log" | sed 's/^/  /'
   fi
   if [ -f "$OUT" ]; then
     echo "scheduler output $OUT (last 3 lines):"

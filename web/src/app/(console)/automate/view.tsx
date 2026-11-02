@@ -113,7 +113,7 @@ export function AutomateView() {
           <b>No Playwright run on disk yet</b>
           <span>
             Nothing in <span className="mono">{runs.dir}</span>. Run the suite once with <span className="mono">make monitor</span> (or{" "}
-            <span className="mono">scripts/e2e-stack.sh up && scripts/e2e-stack.sh test</span>) and this page shows it.
+            <span className="mono">playwright/scripts/e2e-stack.sh up && playwright/scripts/e2e-stack.sh test</span>) and this page shows it.
           </span>
         </div>
       </>

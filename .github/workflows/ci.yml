@@ -136,18 +136,21 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          package_json_file: package.json
+          package_json_file: playwright/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: playwright/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+        working-directory: playwright
       - run: pnpm exec playwright install --with-deps chromium
+        working-directory: playwright
 
       # @live tests (journey a: real LLM, journey b: logged-in Telegram number) cannot run here;
-      # scripts/e2e-stack.sh test and the launchd monitor still run them.
+      # playwright/scripts/e2e-stack.sh test and the launchd monitor still run them.
       - name: Playwright (api + ui, without @live)
+        working-directory: playwright
         run: pnpm test:e2e --grep-invert @live
 
       - name: Save Compose logs

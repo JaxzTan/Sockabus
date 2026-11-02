@@ -142,8 +142,10 @@ Database scripts run a pinned `postgres:17-alpine` client through Docker (`scrip
 ```bash
 make test                     # Go unit tests
 make up migrate-up && make test-db test-e2e   # DB + Temporal integration (local Docker only)
-pnpm install && pnpm exec playwright install chromium
-SOCKABUS_API_URL=http://localhost:8080 SOCKABUS_WEB_URL=http://localhost:3000 \
+make -C playwright install    # once: Playwright deps + Chromium (self-contained in playwright/)
+make e2e-up && make e2e && make e2e-down   # throwaway stack, full suite, teardown
+# or against your own backend:
+cd playwright && SOCKABUS_API_URL=http://localhost:8080 SOCKABUS_WEB_URL=http://localhost:3000 \
 SOCKABUS_OPERATOR_TOKEN=<backend token> pnpm test:e2e   # or test:api / test:ui
 ```
 
@@ -176,7 +178,7 @@ Playwright needs a backend in `SOCKABUS_MODE=live` with `SOCKABUS_SIM=1`, `SOCKA
 | `internal/engine` | Honeypot loop: extract → classify → stage → persona reply |
 | `internal/db` | sqlc-generated data layer |
 | `internal/demostore` | In-memory data layer seeded from `seed.json` (to be replaced by PostgreSQL + Redis) |
-| `playwright` | Playwright API (`playwright/api`) and UI (`playwright/ui`) tests, config `playwright/playwright.config.ts`, results and reports; deps in root `package.json` |
+| `playwright` | Playwright API (`playwright/api`) and UI (`playwright/ui`) tests, config `playwright/playwright.config.ts`, its own `package.json`, `Makefile`, scripts, results and reports |
 | `scripts` | `pg.sh` (Dockerised psql/pg_dump), `backup.sh`, `restore-test.sh`, `app-role.sh`, `check-migrations.sql` |
 | `docs` | PRD, TRD, contributing rules, architecture diagram (`docs/archify`) |
 

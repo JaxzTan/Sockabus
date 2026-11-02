@@ -2,8 +2,8 @@
 # Scheduled Playwright run (playwright/README.md "Monitoring"). Run by `make monitor` and by the schedule
 # `make monitor-install` sets up (crontab or a launchd LaunchAgent).
 #
-#   1. takes a lock (.e2e/monitor.lock), so two runs never overlap
-#   2. brings the throwaway test stack up (scripts/e2e-stack.sh) unless it is already up
+#   1. takes a lock (playwright/.e2e/monitor.lock), so two runs never overlap
+#   2. brings the throwaway test stack up (playwright/scripts/e2e-stack.sh) unless it is already up
 #   3. runs the full suite with E2E_LLM_PROVIDER=fake (override: E2E_LLM_PROVIDER=gemini make monitor)
 #   4. copies playwright/results/latest.json to playwright/results/history/<UTC timestamp>.json (+ its screenshots
 #      in <timestamp>.files/), keeps the last 50
@@ -15,14 +15,15 @@
 # Never touches the Compose app/web/postgres/redis/temporal containers or the database in .env.
 set -uo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RESULTS="$ROOT/playwright/results"
+PW=$(cd "$(dirname "$0")/.." && pwd)   # playwright/
+ROOT=$(cd "$PW/.." && pwd)            # repo root
+RESULTS="$PW/results"
 HIST="$RESULTS/history"
 LOG="$RESULTS/monitor.log"
-STATE="$ROOT/.e2e"
+STATE="$PW/.e2e"
 LOCK="$STATE/monitor.lock"
 KEEP=${E2E_MONITOR_KEEP:-50}
-STACK="$ROOT/scripts/e2e-stack.sh"
+STACK="$PW/scripts/e2e-stack.sh"
 export E2E_LLM_PROVIDER=${E2E_LLM_PROVIDER:-fake}
 # The suite must never see the production DB (e2e-stack.sh refuses it too).
 unset DATABASE_URL SOCKABUS_POSTGRES_URL
@@ -147,8 +148,8 @@ fi
 prev=$(ls -1 "$HIST"/*.json 2>/dev/null | sort | tail -n1)
 cp "$latest" "$HIST/$stamp.json"
 # Screenshots of this run (test-results/ is overwritten by the next run).
-if [ -d "$ROOT/playwright/test-results" ]; then
-  (cd "$ROOT/playwright/test-results" && find . -name '*.png' -print0 | while IFS= read -r -d '' f; do
+if [ -d "$PW/test-results" ]; then
+  (cd "$PW/test-results" && find . -name '*.png' -print0 | while IFS= read -r -d '' f; do
     mkdir -p "$HIST/$stamp.files/$(dirname "$f")" && cp "$f" "$HIST/$stamp.files/$f"
   done)
 fi

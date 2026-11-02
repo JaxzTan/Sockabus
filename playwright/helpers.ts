@@ -211,12 +211,12 @@ export async function cannedLines(api: APIRequestContext): Promise<Set<string>> 
 }
 
 // Run SQL directly on the test stack's database, for setup that no API can do (e.g. corrupting a stored
-// ciphertext). SOCKABUS_E2E_PSQL is a psql command reading SQL on stdin: scripts/e2e-stack.sh env sets
+// ciphertext). SOCKABUS_E2E_PSQL is a psql command reading SQL on stdin: playwright/scripts/e2e-stack.sh env sets
 // "docker exec -i sockabus-e2e-pg psql -U buru -d sockabus_e2e"; CI sets the Compose equivalent.
 // Fails (never skips) when it is missing, and refuses anything that mentions Supabase.
 export function psql(sql: string): string {
   const cmd = process.env.SOCKABUS_E2E_PSQL ?? "";
-  if (!cmd) throw new Error("SOCKABUS_E2E_PSQL is not set: this test writes to the test database directly (eval \"$(scripts/e2e-stack.sh env)\")");
+  if (!cmd) throw new Error("SOCKABUS_E2E_PSQL is not set: this test writes to the test database directly (eval \"$(playwright/scripts/e2e-stack.sh env)\")");
   if (/supabase/i.test(cmd) || /supabase/i.test(sql)) throw new Error("SOCKABUS_E2E_PSQL must point at the throwaway test database, never Supabase");
   const [bin, ...args] = cmd.trim().split(/\s+/);
   return execFileSync(bin, [...args, "-v", "ON_ERROR_STOP=1", "-qtA"], { input: sql, encoding: "utf8" }).trim();

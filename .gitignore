@@ -58,12 +58,12 @@ test/
 # problem folder
 gallery
 
-# Playwright (deps at repo root, suite in playwright/)
-/node_modules/
+# Playwright (self-contained in playwright/)
+/playwright/node_modules/
 /playwright/playwright-report/
 /playwright/test-results/
 /playwright/blob-report/
 /playwright/results/
 
-# Playwright test stack state (scripts/e2e-stack.sh)
-/.e2e/
+# Playwright test stack state (playwright/scripts/e2e-stack.sh)
+/playwright/.e2e/

@@ -3,19 +3,20 @@
 # containers or the database in .env (Supabase): it runs its own PostgreSQL, Redis and Temporal
 # containers on other ports, the Go API from source on :18080 and the console (`pnpm dev`) on :13000.
 #
-#   scripts/e2e-stack.sh up       start everything, migrate + seed the scratch DB, wait until ready
-#   scripts/e2e-stack.sh test     run the suite against the stack (extra args go to playwright)
-#   scripts/e2e-stack.sh down     stop the API and console, remove the three containers and their data
-#   scripts/e2e-stack.sh status   what is running
-#   scripts/e2e-stack.sh env      print the test variables (source it: eval "$(scripts/e2e-stack.sh env)")
+#   playwright/scripts/e2e-stack.sh up       start everything, migrate + seed the scratch DB, wait until ready
+#   playwright/scripts/e2e-stack.sh test     run the suite against the stack (extra args go to playwright)
+#   playwright/scripts/e2e-stack.sh down     stop the API and console, remove the three containers and their data
+#   playwright/scripts/e2e-stack.sh status   what is running
+#   playwright/scripts/e2e-stack.sh env      print the test variables (source it: eval "$(playwright/scripts/e2e-stack.sh env)")
 #
 # LLM: the provider and models in .env (anthropic = Claude by default), so persona generation and replies are
 # real model output. E2E_LLM_PROVIDER=fake forces the offline fake. Only these keys are read from
 # .env; DATABASE_URL / SOCKABUS_POSTGRES_URL from .env are never used.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-STATE=${E2E_STATE_DIR:-$ROOT/.e2e}
+PW=$(cd "$(dirname "$0")/.." && pwd)   # playwright/
+ROOT=$(cd "$PW/.." && pwd)            # repo root
+STATE=${E2E_STATE_DIR:-$PW/.e2e}
 NAME=sockabus-e2e
 PG_PORT=${E2E_PG_PORT:-15432}
 REDIS_PORT=${E2E_REDIS_PORT:-16379}
@@ -228,7 +229,7 @@ status() {
 }
 
 envout() {
-  [ -f "$STATE/stack.env" ] || die "stack is not up (scripts/e2e-stack.sh up)"
+  [ -f "$STATE/stack.env" ] || die "stack is not up (playwright/scripts/e2e-stack.sh up)"
   grep -v '^SOCKABUS_MESSAGE_KEY=' "$STATE/stack.env" | sed 's/^/export /'
   echo "export SOCKABUS_E2E_LLM=$(cat "$STATE/llm-provider" 2>/dev/null || echo unknown)"
   # Direct SQL on the scratch DB for test setup that no API can do (playwright/helpers.ts psql()).
@@ -237,10 +238,10 @@ envout() {
 
 runtests() {
   guard_db
-  [ -f "$STATE/stack.env" ] || die "stack is not up (scripts/e2e-stack.sh up)"
+  [ -f "$STATE/stack.env" ] || die "stack is not up (playwright/scripts/e2e-stack.sh up)"
   eval "$(envout)"
   curl -fsS "$SOCKABUS_API_URL/readyz" >/dev/null || die "API $SOCKABUS_API_URL is not ready"
-  cd "$ROOT" && unset DATABASE_URL SOCKABUS_POSTGRES_URL && exec pnpm exec playwright test -c playwright/playwright.config.ts "$@"
+  cd "$PW" && unset DATABASE_URL SOCKABUS_POSTGRES_URL && exec pnpm exec playwright test "$@"
 }
 
 case "${1:-}" in
