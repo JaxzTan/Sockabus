@@ -126,3 +126,7 @@ with `SOCKABUS_API_URL`, `SOCKABUS_WEB_URL` and `SOCKABUS_OPERATOR_TOKEN`.
 CI runs both projects on every pull request (`.github/workflows/ci.yml`, job `e2e`) with the fake LLM.
 Journey b (Telegram) fails there until a Telegram session exists; journey d (AI summary) passes with the fake LLM too (canned summary text);
 that is intended: the suite reports missing features instead of skipping them.
+
+## `@live` tests
+
+Journey a (persona generation, needs the real LLM) and journey b (Telegram, needs a logged-in test number) are tagged `@live`. CI runs `pnpm test:e2e --grep-invert @live` because it has neither. `scripts/e2e-stack.sh test` and the launchd monitor run every test, `@live` included, and those two still fail with a reason when their dependency is missing.

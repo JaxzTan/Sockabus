@@ -115,6 +115,9 @@ jobs:
       # Schema first: with the Telegram connector on, the app reads honeypot_accounts at startup.
       - name: Start PostgreSQL, migrate and seed
         run: |
+          # web bind-mounts these; on Linux Docker would create missing ones as root and Playwright
+          # (runner user) could then not write its results, report or traces.
+          mkdir -p tests/results playwright-report test-results
           docker compose up -d --wait postgres
           docker compose --profile tools run --rm migrate
           docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U buru -d buru < db/seed/001_demo.sql
@@ -142,8 +145,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
 
-      - name: Playwright (api + ui)
-        run: pnpm test:e2e
+      # @live tests (journey a: real LLM, journey b: logged-in Telegram number) cannot run here;
+      # scripts/e2e-stack.sh test and the launchd monitor still run them.
+      - name: Playwright (api + ui, without @live)
+        run: pnpm test:e2e --grep-invert @live
 
       - name: Save Compose logs
         if: ${{ !cancelled() }}
