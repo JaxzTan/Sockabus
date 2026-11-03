@@ -1,5 +1,5 @@
 // End-to-end journeys through the operator API, one test per journey with a step per stage.
-// Real backend, real database, real persona LLM (whatever the test stack runs: see tests/README.md).
+// Real backend, real database, real persona LLM (whatever the test stack runs: see playwright/README.md).
 // Inputs (scammer names, messages, account numbers) are generated per run; nothing is mocked.
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import {
@@ -103,7 +103,7 @@ test("b. Telegram backend: list and connect accounts, read a Telegram chat", { t
       tg,
       `No Telegram session exists in the test stack: honeypot_accounts has ${accounts.length} account(s), none an active, ` +
         `non-simulated Telegram account. Log a test number in against the e2e DB (go run ./cmd/tglogin with ` +
-        `SOCKABUS_POSTGRES_URL set to the scratch DB and SOCKABUS_TG_SESSION_DIR=.e2e/telegram), then rerun.`,
+        `SOCKABUS_POSTGRES_URL set to the scratch DB and SOCKABUS_TG_SESSION_DIR=playwright/.e2e/telegram), then rerun.`,
     ).toBeTruthy();
   });
 

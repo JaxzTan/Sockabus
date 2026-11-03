@@ -57,7 +57,7 @@ a server yet.
 | ID | Requirement | Progress | What exists | Missing |
 |---|---|---|---|---|
 | NFR-9 / TR-20 | Monitoring, alert within 2 min | ~50% | `/internal/status`, `/readyz` (Postgres, Redis, Temporal), Telegram heartbeat to `SOCKABUS_KUMA_TG_PUSH_URL`, backup push | Kuma deployed, monitors, alerts to the team Telegram group |
-| NFR-10 / TR-21 | Automated tests on every PR, merge blocked | ~85% | `fake` LLM, configurable reply floor, `playwright.config.ts`, `tests/api` (8), `tests/ui` (1), CI job `e2e` | First green CI run; branch protection on `main`; `api/openapi.yaml` |
+| NFR-10 / TR-21 | Automated tests on every PR, merge blocked | ~85% | `fake` LLM, configurable reply floor, `playwright/playwright.config.ts`, `playwright/api` (8), `playwright/ui` (1), CI job `e2e` | First green CI run; branch protection on `main`; `api/openapi.yaml` |
 | NFR-11 / TR-23 | 24/7 server, one-command deploy | ~55% | Prod compose without local Postgres, `make deploy` migrating Supabase, `make backup` / `restore-test` on Supabase | VPS, domain, server `.env`, backup cron |
 
 ## Release criteria (TRD §13, due Sun 1 Nov)
@@ -81,7 +81,7 @@ a server yet.
 | G-10 | Account health auto-status | ⚠ | Open; heartbeat loss covers alerting once Kuma runs |
 | G-11 | Telegram connector live | ✅ | Done (commit `3ebbdcb`) |
 | G-12 | Persona generation endpoint + button | ✅ | Done |
-| G-13 | Audit of extraction, verify, lookup | ✅ | Covered by `tests/api/demo-path.spec.ts` |
+| G-13 | Audit of extraction, verify, lookup | ✅ | Covered by `playwright/api/demo-path.spec.ts` |
 
 ## Code vs TRD §5
 

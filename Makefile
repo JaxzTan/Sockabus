@@ -17,7 +17,7 @@ GOLANGCI := $(or $(shell command -v golangci-lint-v2),$(shell command -v golangc
 # Full prod stack on the VPS (docker-compose.prod.yml adds Caddy, Uptime Kuma, persistent Temporal)
 PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app
 
-.PHONY: retention-purge backfill-encrypt demo-customer all up down deploy prod-ps prod-logs backup restore-test migrate-up migrate-down db-check app-role seed keys tglogin tgchat sim sqlc run web arch test test-db test-e2e lint monitor monitor-install monitor-uninstall monitor-status
+.PHONY: retention-purge backfill-encrypt demo-customer all up down deploy prod-ps prod-logs backup restore-test migrate-up migrate-down db-check app-role seed keys tglogin tgchat sim sqlc run web arch test test-db test-e2e lint e2e-up e2e e2e-down monitor monitor-install monitor-uninstall monitor-status
 
 all: ## build and start every container: postgres, redis, temporal, migrations, app, web
 	docker compose up -d --wait postgres redis temporal
@@ -120,19 +120,28 @@ lint:
 	go vet ./...
 	$(GOLANGCI) run ./...
 
-# Playwright monitor (tests/README.md "Monitoring"): throwaway test stack, fake LLM, history in tests/results.
-# env -u: make exports .env, whose DATABASE_URL is Supabase; the monitor must never see it.
+# Playwright e2e suite: self-contained in playwright/ (its own package.json, Makefile, scripts). These
+# targets forward to playwright/Makefile; `make -C playwright help` lists all of them. Never Supabase.
 INTERVAL ?= 60
 MECH ?= cron
 
+e2e-up: ## start the throwaway Playwright test stack (playwright/scripts/e2e-stack.sh up)
+	@$(MAKE) -s -C playwright up
+
+e2e: ## run the Playwright suite on the test stack (needs `make e2e-up`); ARGS='ui -g bank' to filter
+	@$(MAKE) -s -C playwright test ARGS='$(ARGS)'
+
+e2e-down: ## stop the Playwright test stack and delete its scratch DB
+	@$(MAKE) -s -C playwright down
+
 monitor: ## run the Playwright suite once on the test stack, archive the result, alert on failure
-	@env -u DATABASE_URL -u SOCKABUS_POSTGRES_URL scripts/e2e-monitor.sh
+	@$(MAKE) -s -C playwright monitor
 
 monitor-install: ## schedule `make monitor` every INTERVAL minutes (default 60) via MECH=cron (default) or MECH=launchd
-	@scripts/e2e-monitor-schedule.sh install '$(INTERVAL)' '$(MECH)'
+	@$(MAKE) -s -C playwright monitor-install INTERVAL='$(INTERVAL)' MECH='$(MECH)'
 
 monitor-uninstall: ## remove the monitor's crontab line / LaunchAgent (other crontab lines are kept)
-	@scripts/e2e-monitor-schedule.sh uninstall
+	@$(MAKE) -s -C playwright monitor-uninstall
 
 monitor-status: ## the installed schedule and the last monitor run
-	@scripts/e2e-monitor-schedule.sh status
+	@$(MAKE) -s -C playwright monitor-status

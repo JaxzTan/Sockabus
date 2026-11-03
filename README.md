@@ -25,7 +25,7 @@ Multilingual AI personas run on honeypot messaging accounts and keep scammers ta
 - Product requirements: [docs/PRD.md](docs/PRD.md)
 - Technical design: [docs/TRD.md](docs/TRD.md)
 - Live Telegram honeypot setup and testing: [docs/telegram-honeypot.md](docs/telegram-honeypot.md)
-- Playwright end-to-end tests: [tests/README.md](tests/README.md)
+- Playwright end-to-end tests: [playwright/README.md](playwright/README.md)
 
 ## Features
 
@@ -142,12 +142,14 @@ Database scripts run a pinned `postgres:17-alpine` client through Docker (`scrip
 ```bash
 make test                     # Go unit tests
 make up migrate-up && make test-db test-e2e   # DB + Temporal integration (local Docker only)
-pnpm install && pnpm exec playwright install chromium
-SOCKABUS_API_URL=http://localhost:8080 SOCKABUS_WEB_URL=http://localhost:3000 \
+make -C playwright install    # once: Playwright deps + Chromium (self-contained in playwright/)
+make e2e-up && make e2e && make e2e-down   # throwaway stack, full suite, teardown
+# or against your own backend:
+cd playwright && SOCKABUS_API_URL=http://localhost:8080 SOCKABUS_WEB_URL=http://localhost:3000 \
 SOCKABUS_OPERATOR_TOKEN=<backend token> pnpm test:e2e   # or test:api / test:ui
 ```
 
-Playwright needs a backend in `SOCKABUS_MODE=live` with `SOCKABUS_SIM=1`, `SOCKABUS_LLM_PROVIDER=fake` and short reply timing. Point it at a scratch database, never Supabase. Full settings: [tests/README.md](tests/README.md). CI runs both projects on every PR (job `e2e` in `.github/workflows/ci.yml`).
+Playwright needs a backend in `SOCKABUS_MODE=live` with `SOCKABUS_SIM=1`, `SOCKABUS_LLM_PROVIDER=fake` and short reply timing. Point it at a scratch database, never Supabase. Full settings: [playwright/README.md](playwright/README.md). CI runs both projects on every PR (job `e2e` in `.github/workflows/ci.yml`).
 
 ## Project Structure
 
@@ -176,7 +178,7 @@ Playwright needs a backend in `SOCKABUS_MODE=live` with `SOCKABUS_SIM=1`, `SOCKA
 | `internal/engine` | Honeypot loop: extract → classify → stage → persona reply |
 | `internal/db` | sqlc-generated data layer |
 | `internal/demostore` | In-memory data layer seeded from `seed.json` (to be replaced by PostgreSQL + Redis) |
-| `tests` | Playwright API (`tests/api`) and UI (`tests/ui`) tests; config in `playwright.config.ts`, deps in root `package.json` |
+| `playwright` | Playwright API (`playwright/api`) and UI (`playwright/ui`) tests, config `playwright/playwright.config.ts`, its own `package.json`, `Makefile`, scripts, results and reports |
 | `scripts` | `pg.sh` (Dockerised psql/pg_dump), `backup.sh`, `restore-test.sh`, `app-role.sh`, `check-migrations.sql` |
 | `docs` | PRD, TRD, contributing rules, architecture diagram (`docs/archify`) |
 

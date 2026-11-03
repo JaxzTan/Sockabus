@@ -1,5 +1,5 @@
 "use client";
-// Playwright results (tests/README.md "Monitoring"): the latest run, every test with its steps, and the
+// Playwright results (playwright/README.md "Monitoring"): the latest run, every test with its steps, and the
 // monitor's run history. Data comes from /api/automate/* (src/lib/e2e-results.ts), read from disk on the
 // server. Real results only: with nothing on disk the page says so.
 import { Fragment, useCallback, useEffect, useState } from "react";
@@ -113,7 +113,7 @@ export function AutomateView() {
           <b>No Playwright run on disk yet</b>
           <span>
             Nothing in <span className="mono">{runs.dir}</span>. Run the suite once with <span className="mono">make monitor</span> (or{" "}
-            <span className="mono">scripts/e2e-stack.sh up && scripts/e2e-stack.sh test</span>) and this page shows it.
+            <span className="mono">playwright/scripts/e2e-stack.sh up && playwright/scripts/e2e-stack.sh test</span>) and this page shows it.
           </span>
         </div>
       </>
@@ -330,7 +330,7 @@ function History({ runs, current, pick }: { runs: E2ERunsResponse; current: stri
         </h2>
         <span className="foot-note">
           {runs.history.length
-            ? `${plural(runs.history.length, "monitor run")} kept in tests/results/history (last 50)`
+            ? `${plural(runs.history.length, "monitor run")} kept in playwright/results/history (last 50)`
             : "No monitor runs yet: make monitor-install schedules one every 60 min."}
         </span>
       </div>

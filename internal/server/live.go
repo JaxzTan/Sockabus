@@ -15,6 +15,7 @@ import (
 
 	"github.com/JaxzTan/Buru_AI/internal/channel/sim"
 	"github.com/JaxzTan/Buru_AI/internal/db"
+	"github.com/JaxzTan/Buru_AI/internal/gateway"
 	"github.com/JaxzTan/Buru_AI/internal/honeypot"
 	"github.com/JaxzTan/Buru_AI/internal/llm"
 	"github.com/JaxzTan/Buru_AI/internal/persona"
@@ -253,6 +254,9 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, llm.ErrBlocked):
 		status = http.StatusBadGateway
 		msg = "LLM provider declined the request"
+	case errors.Is(err, gateway.ErrNotConnected), errors.Is(err, gateway.ErrNoSender):
+		status = http.StatusServiceUnavailable
+		msg = "honeypot account is not connected to Telegram: re-login it (make tglogin) and restart the app"
 	case errors.Is(err, llm.ErrNoClient):
 		status = http.StatusServiceUnavailable
 		msg = "no LLM configured: set ANTHROPIC_API_KEY (SOCKABUS_LLM_PROVIDER=anthropic, the default)"

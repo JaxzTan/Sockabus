@@ -117,7 +117,7 @@ jobs:
         run: |
           # web bind-mounts these; on Linux Docker would create missing ones as root and Playwright
           # (runner user) could then not write its results, report or traces.
-          mkdir -p tests/results playwright-report test-results
+          mkdir -p playwright/results playwright/playwright-report playwright/test-results
           docker compose up -d --wait postgres
           docker compose --profile tools run --rm migrate
           docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U buru -d buru < db/seed/001_demo.sql
@@ -136,18 +136,21 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          package_json_file: package.json
+          package_json_file: playwright/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: playwright/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+        working-directory: playwright
       - run: pnpm exec playwright install --with-deps chromium
+        working-directory: playwright
 
       # @live tests (journey a: real LLM, journey b: logged-in Telegram number) cannot run here;
-      # scripts/e2e-stack.sh test and the launchd monitor still run them.
+      # playwright/scripts/e2e-stack.sh test and the launchd monitor still run them.
       - name: Playwright (api + ui, without @live)
+        working-directory: playwright
         run: pnpm test:e2e --grep-invert @live
 
       - name: Save Compose logs
@@ -159,9 +162,9 @@ jobs:
         with:
           name: playwright-report
           path: |
-            playwright-report/
-            test-results/
-            tests/results/
+            playwright/playwright-report/
+            playwright/test-results/
+            playwright/results/
             compose.log
           retention-days: 14
 
