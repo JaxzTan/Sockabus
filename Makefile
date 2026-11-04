@@ -145,3 +145,5 @@ monitor-uninstall: ## remove the monitor's crontab line / LaunchAgent (other cro
 
 monitor-status: ## the installed schedule and the last monitor run
 	@$(MAKE) -s -C playwright monitor-status
+
+re: down all
