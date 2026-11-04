@@ -186,7 +186,7 @@ export function PersonasView() {
                       aria-pressed={p.id === selId}
                       data-testid="persona-modify-btn"
                     >
-                      Modify
+                      Details
                     </button>
                     {p.status === "active" ? (
                       <button className="btn btn-secondary btn-sm" onClick={() => setPersonaStatus(p.id, "paused")} data-testid="persona-pause-btn">
