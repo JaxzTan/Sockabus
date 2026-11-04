@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"math/rand"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -41,9 +42,10 @@ type Timing struct {
 	ReadMin        time.Duration // delay before starting to reply to a new burst (≥ MinDelay)
 	ReadMax        time.Duration
 	BurstGap       time.Duration // keep waiting while the scammer is still sending
-	CharsPerSecond float64       // typing speed used to size the "typing…" phase
+	WordsPerMinute float64       // think + type speed used to size the "typing…" phase (30 WPM ≈ Malaysian average)
 	TypingMin      time.Duration
 	TypingMax      time.Duration
+	BubbleGap      time.Duration // extra pause before each bubble after the first in one reply
 	Inactivity     time.Duration // close the conversation after this long with no scammer message
 }
 
@@ -60,14 +62,17 @@ func (t Timing) WithDefaults() Timing {
 	if t.BurstGap <= 0 {
 		t.BurstGap = 8 * time.Second
 	}
-	if t.CharsPerSecond <= 0 {
-		t.CharsPerSecond = 3.5
+	if t.WordsPerMinute <= 0 {
+		t.WordsPerMinute = 30
 	}
 	if t.TypingMin <= 0 {
 		t.TypingMin = 3 * time.Second
 	}
 	if t.TypingMax < t.TypingMin {
-		t.TypingMax = 30 * time.Second
+		t.TypingMax = 3 * time.Minute
+	}
+	if t.BubbleGap <= 0 {
+		t.BubbleGap = 10 * time.Second
 	}
 	if t.Inactivity <= 0 {
 		t.Inactivity = 72 * time.Hour
@@ -75,9 +80,9 @@ func (t Timing) WithDefaults() Timing {
 	return t
 }
 
-// TypingDuration sizes the "typing…" phase for a bubble.
+// TypingDuration sizes the "typing…" phase for a bubble: words at WordsPerMinute, thinking included.
 func (t Timing) TypingDuration(text string, jitter float64) time.Duration {
-	secs := float64(len([]rune(text))) / t.CharsPerSecond * jitter
+	secs := float64(len(strings.Fields(text))) * 60 / t.WordsPerMinute * jitter
 	d := time.Duration(secs * float64(time.Second))
 	return max(t.TypingMin, min(d, t.TypingMax))
 }
@@ -228,7 +233,12 @@ func ConversationWorkflow(ctx workflow.Context, in ConversationInput) error {
 			lg.Error("GenerateReply failed", "conversation_id", id, "error", err)
 			return false
 		}
-		for _, bubble := range gen.Bubbles {
+		for i, bubble := range gen.Bubbles {
+			// A second bubble in the same reply waits BubbleGap first. Versioned so replies already
+			// in flight before this change replay without the extra timer.
+			if i > 0 && workflow.GetVersion(ctx, "bubble-gap", workflow.DefaultVersion, 1) == 1 {
+				_ = workflow.Sleep(ctx, t.BubbleGap)
+			}
 			var jitter float64
 			_ = workflow.SideEffect(ctx, func(workflow.Context) any { return 0.8 + rand.Float64()*0.5 }).Get(&jitter)
 			typing := t.TypingDuration(bubble, jitter)

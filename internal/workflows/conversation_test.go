@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func newEnv(t *testing.T, bubbles ...string) (*testsuite.TestWorkflowEnvironment
 
 func fastTiming() Timing {
 	// Deliberately below the FR-3 floor: the workflow must clamp it to 10 s.
-	return Timing{ReadMin: time.Second, ReadMax: 2 * time.Second, BurstGap: time.Second, TypingMin: time.Second, TypingMax: 2 * time.Second, Inactivity: time.Hour}
+	return Timing{ReadMin: time.Second, ReadMax: 2 * time.Second, BurstGap: time.Second, TypingMin: time.Second, TypingMax: 2 * time.Second, BubbleGap: time.Second, Inactivity: time.Hour}
 }
 
 func TestReplyNeverFasterThanTenSeconds(t *testing.T) {
@@ -168,7 +169,18 @@ func TestTimingDefaultsClampFloor(t *testing.T) {
 	if d := tm.TypingDuration("hi", 1); d != tm.TypingMin {
 		t.Errorf("short text typing = %v, want min %v", d, tm.TypingMin)
 	}
-	if d := tm.TypingDuration(string(make([]rune, 2000)), 1); d != tm.TypingMax {
+	if d := tm.TypingDuration(strings.Repeat("kata ", 2000), 1); d != tm.TypingMax {
 		t.Errorf("long text typing = %v, want max %v", d, tm.TypingMax)
+	}
+}
+
+func TestTypingDurationThirtyWPM(t *testing.T) {
+	tm := Timing{}.WithDefaults()
+	if tm.WordsPerMinute != 30 || tm.BubbleGap != 10*time.Second {
+		t.Fatalf("defaults %+v", tm)
+	}
+	// 15 words at 30 WPM = 30 s.
+	if d := tm.TypingDuration(strings.Repeat("ok ", 15), 1); d != 30*time.Second {
+		t.Errorf("15 words typing = %v, want 30s", d)
 	}
 }

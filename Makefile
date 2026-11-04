@@ -5,10 +5,15 @@ export
 SOCKABUS_POSTGRES_URL := $(subst ",,$(SOCKABUS_POSTGRES_URL))
 DATABASE_URL := $(subst ",,$(DATABASE_URL))
 
-# migrate-*, test-db, seed, backup, db-check and app-role use DATABASE_URL from .env (Supabase owner)
-# when set, else local Docker. test-e2e always uses local Docker: it writes append-only test rows.
+# The app (make run/dev, compose app profile) uses SOCKABUS_POSTGRES_URL from .env: Supabase session pooler.
+# migrate-*, seed, backup, db-check and app-role use DATABASE_URL from .env (Supabase owner, session pooler)
+# when set, else local Docker. test-db and test-e2e always use the local-db Docker container (never Supabase).
 LOCAL_DB := postgres://buru:buru@localhost:5432/buru?sslmode=disable
 MIGRATE_DB := $(if $(DATABASE_URL),$(if $(findstring ?,$(DATABASE_URL)),$(DATABASE_URL),$(DATABASE_URL)?sslmode=require),$(LOCAL_DB))
+# The direct host db.<ref>.supabase.co is IPv6-only (unreachable from this Mac and Docker Desktop):
+# refuse it so a target fails fast with a hint instead of hanging. The pooler host ends in supabase.com.
+DIRECT_HOST := $(or $(findstring supabase.co:,$(MIGRATE_DB)),$(findstring supabase.co/,$(MIGRATE_DB)))
+NEED_POOLER = @$(if $(DIRECT_HOST),echo "DATABASE_URL uses the IPv6-only db.<ref>.supabase.co host; use the session pooler: postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require" >&2; exit 2,true)
 # sqlc from PATH, else where `go install` puts it
 SQLC := $(or $(shell command -v sqlc),$(shell go env GOPATH)/bin/sqlc)
 # golangci-lint v2 under either name, else where `go install` puts it
@@ -17,19 +22,22 @@ GOLANGCI := $(or $(shell command -v golangci-lint-v2),$(shell command -v golangc
 # Full prod stack on the VPS (docker-compose.prod.yml adds Caddy, Uptime Kuma, persistent Temporal)
 PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app
 
-.PHONY: retention-purge backfill-encrypt demo-customer all up down deploy prod-ps prod-logs backup restore-test migrate-up migrate-down db-check app-role seed keys tglogin tgchat sim sqlc run web arch test test-db test-e2e lint e2e-up e2e e2e-down monitor monitor-install monitor-uninstall monitor-status
+.PHONY: dev local-db retention-purge backfill-encrypt demo-customer all up down deploy prod-ps prod-logs backup restore-test migrate-up migrate-down db-check app-role seed keys tglogin tgchat sim sqlc run web arch test test-db test-e2e lint e2e-up e2e e2e-down monitor monitor-install monitor-uninstall monitor-status
 
-all: ## build and start every container: postgres, redis, temporal, migrations, app, web
-	docker compose up -d --wait postgres redis temporal
-	docker compose --profile tools run --rm migrate
+all: ## build and start redis, temporal, app, web (database = Supabase from .env; no migrations run)
+	docker compose up -d --wait redis temporal
 	docker compose --profile app up -d --build --wait --remove-orphans
 	docker compose --profile app ps
 
-up: ## start PostgreSQL, Redis, Temporal
-	docker compose up -d --wait postgres redis temporal
+up: ## start Redis, Temporal (the database is Supabase, SOCKABUS_POSTGRES_URL in .env)
+	docker compose up -d --wait redis temporal
 
-down: ## stop everything, including the app/web profile containers
-	docker compose --profile app down
+local-db: ## start the throwaway local PostgreSQL (tests only) and migrate it
+	docker compose --profile local-db up -d --wait postgres
+	docker compose --profile tools run --rm migrate
+
+down: ## stop everything, including the app/web and local-db profile containers
+	docker compose --profile app --profile local-db down
 
 deploy: ## on the VPS: pull main, run migrations, rebuild and restart the full stack (TR-23)
 	git pull --ff-only origin main
@@ -45,24 +53,30 @@ prod-logs: ## follow app, web and caddy logs on the VPS
 	$(PROD) logs -f --tail=100 app web caddy
 
 backup: ## gzip pg_dump of DATABASE_URL (Supabase) into backups/, copied off-server when BACKUP_REMOTE is set
+	$(NEED_POOLER)
 	@DATABASE_URL='$(MIGRATE_DB)' scripts/backup.sh
 
 restore-test: ## restore the newest dump into a throwaway container, count rows, remove it (never touches Supabase)
 	scripts/restore-test.sh $(FILE)
 
 migrate-up:
+	$(NEED_POOLER)
 	@migrate -path db/migrations -database '$(MIGRATE_DB)' up # @: never echo the URL (it holds the password)
 
 migrate-down:
+	$(NEED_POOLER)
 	@migrate -path db/migrations -database '$(MIGRATE_DB)' down 1
 
 db-check: ## read-only: applied migration version + rows that would break migration 000005's constraints
+	$(NEED_POOLER)
 	@DATABASE_URL='$(MIGRATE_DB)' scripts/pg.sh psql -q < scripts/check-migrations.sql
 
 app-role: ## create or re-key the app login buru_api (member of buru_app); prints its new password once
+	$(NEED_POOLER)
 	@DATABASE_URL='$(MIGRATE_DB)' scripts/app-role.sh
 
 seed: ## demo operator, playbooks and the four console personas (idempotent)
+	$(NEED_POOLER)
 	@DATABASE_URL='$(MIGRATE_DB)' scripts/pg.sh psql -v ON_ERROR_STOP=1 -q < db/seed/001_demo.sql
 
 keys: ## print fresh values for SOCKABUS_OPERATOR_TOKEN and SOCKABUS_MESSAGE_KEY
@@ -101,6 +115,8 @@ stop:
 run: up
 	go run ./cmd/sockabus
 
+dev: run ## same as run: Redis + Temporal in Docker, Go app on the host against Supabase
+
 web: ## dashboard on :3000, proxies /api to :8080
 	cd web && pnpm dev
 
@@ -110,10 +126,10 @@ arch: ## open docs/architecture.html in the default browser
 test:
 	go test -race ./...
 
-test-db: ## DB integration tests on MIGRATE_DB; writes run in rolled-back transactions
-	@SOCKABUS_TEST_POSTGRES_URL='$(MIGRATE_DB)' go test -count=1 ./internal/db/
+test-db: local-db ## DB integration tests on the local-db container (never Supabase); writes are rolled back
+	SOCKABUS_TEST_POSTGRES_URL='$(LOCAL_DB)' go test -count=1 ./internal/db/
 
-test-e2e: ## full honeypot loop on local PostgreSQL + Temporal; needs `make up migrate-up` (never Supabase)
+test-e2e: up local-db ## full honeypot loop on the local-db PostgreSQL + Temporal (never Supabase)
 	SOCKABUS_TEST_POSTGRES_URL='$(LOCAL_DB)' SOCKABUS_TEST_TEMPORAL=localhost:7233 go test -count=1 -v -run TestE2E ./internal/honeypot/
 
 lint:

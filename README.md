@@ -91,7 +91,7 @@ Copy `.env.example` to `.env` at the repo root. Key variables:
 
 ### Run
 ```bash
-make up            # PostgreSQL :5432, Redis :6379, Temporal :7233 (UI :8233)
+make up            # Redis :6379, Temporal :7233 (UI :8233); DB = Supabase (SOCKABUS_POSTGRES_URL)
 make migrate-up
 make run           # API on :8080 (SOCKABUS_MODE=demo: in-memory pitch data)
 curl localhost:8080/readyz

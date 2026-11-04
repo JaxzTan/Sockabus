@@ -294,7 +294,17 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 	if conv.ScamType.Valid {
 		scam = string(conv.ScamType.ScamType)
 	}
-	system := persona.SystemPrompt(prof, persona.Situation{Channel: string(acct.Channel), ScamType: scam, Stage: stage, Now: s.Now()})
+	var got []persona.Extracted
+	if ents, err := s.Q.ListConversationEntities(ctx, conv.ID); err != nil {
+		s.Log.Warn("listing extracted entities failed; persona replies without them", "conversation_id", conv.ID, "err", err)
+	} else {
+		for _, e := range ents {
+			if e.Status != db.EntityStatusRejected {
+				got = append(got, persona.Extracted{Type: string(e.Type), BankOrChain: e.BankOrChain.String, Value: e.ValueNormalized})
+			}
+		}
+	}
+	system := persona.SystemPrompt(prof, persona.Situation{Channel: string(acct.Channel), ScamType: scam, Stage: stage, Now: s.Now(), Got: got})
 
 	turns := make([]llm.Turn, 0, len(hist))
 	for _, m := range hist {
@@ -311,7 +321,7 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 			sys += "\n\n(Your previous draft broke the rules above. Write a new reply, fully in character.)"
 		}
 		gctx, cancel := context.WithTimeout(ctx, personaLLMTimeout)
-		out, err := s.PersonaLLM.Generate(gctx, llm.Request{System: sys, Turns: turns, MaxOutputTokens: 2048, Effort: llm.EffortLow})
+		out, err := s.PersonaLLM.Generate(gctx, llm.Request{System: sys, Turns: turns, MaxOutputTokens: 2048, Effort: llm.EffortMedium})
 		timedOut := gctx.Err() != nil
 		cancel()
 		if err != nil {

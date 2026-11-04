@@ -61,7 +61,8 @@ type Live struct {
 	ReplyDelayMin     time.Duration // FR-3 floor; below 10 s only outside prod (CI and tests)
 	ReplyReadMin      time.Duration
 	ReplyReadMax      time.Duration
-	TypingCPS         float64
+	TypingWPM         float64
+	BubbleGap         time.Duration // pause before each extra bubble in one reply
 	Inactivity        time.Duration
 }
 
@@ -167,8 +168,14 @@ func Load() (Config, error) {
 	if l.PersonaGenTimeout, err = durEnv("SOCKABUS_PERSONA_GEN_TIMEOUT", 90*time.Second); err != nil {
 		return c, err
 	}
-	if l.TypingCPS, err = floatEnv("SOCKABUS_TYPING_CPS", 3.5); err != nil {
+	if l.TypingWPM, err = floatEnv("SOCKABUS_TYPING_WPM", 30); err != nil {
 		return c, err
+	}
+	if l.BubbleGap, err = durEnv("SOCKABUS_REPLY_BUBBLE_GAP", 10*time.Second); err != nil {
+		return c, err
+	}
+	if l.BubbleGap <= 0 {
+		l.BubbleGap = time.Millisecond // "0" means no gap; a zero Timing.BubbleGap would mean the 10 s default
 	}
 
 	if len(l.OperatorToken) < 24 {

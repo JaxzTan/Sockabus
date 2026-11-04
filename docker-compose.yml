@@ -1,8 +1,12 @@
-# Local environment (docs/TRD.md §8): PostgreSQL, Redis, Temporal dev server, Sockabus app + dashboard.
-# `make up` starts dependencies only; `docker compose --profile app up` also runs the Go app and the web dashboard.
+# Local environment (docs/TRD.md §8): Redis, Temporal dev server, Sockabus app + dashboard.
+# The app's database is Supabase: SOCKABUS_POSTGRES_URL from .env (session pooler, port 5432, sslmode=require).
+# `make up` starts Redis + Temporal only; `docker compose --profile app up` also runs the Go app and the web dashboard.
 services:
+  # Throwaway local database for tests only (make test-e2e / test-db, CI). Never the app's runtime DB.
+  # Start it with `make local-db` or `docker compose --profile local-db up -d --wait postgres`.
   postgres:
     container_name: postgres
+    profiles: [local-db, tools] # tools: the local `migrate` one-off below needs it
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: buru
@@ -45,8 +49,8 @@ services:
     # Session files from make tglogin (same mount as docker-compose.prod.yml).
     volumes: [./.secrets/telegram:/secrets/telegram]
     ports: ["8080:8080"]
+    # No postgres dependency: the app connects to Supabase via SOCKABUS_POSTGRES_URL in .env.
     depends_on:
-      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       temporal: { condition: service_started }
 
@@ -72,7 +76,9 @@ services:
     ports: ["3000:3000"]
     depends_on: [app]
 
-  # One-off: docker compose run --rm migrate (make deploy runs it before restarting the app).
+  # One-off, LOCAL test database only: docker compose --profile tools run --rm migrate (make test-e2e runs it).
+  # Never auto-run by make up/all. Supabase migrations go through docker-compose.prod.yml (make deploy),
+  # which overrides this command with DATABASE_URL, or `make migrate-up`.
   migrate:
     profiles: [tools]
     image: migrate/migrate:v4.19.1

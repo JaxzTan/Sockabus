@@ -117,7 +117,7 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 	fake := &fakeLLM{}
 	queue := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
 	// ReadMin below 10 s on purpose: the workflow must clamp it to the FR-3 floor.
-	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second}
+	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second, BubbleGap: time.Millisecond}
 	svc := NewService(pool, box, fake, fake, tc, senders, Config{TaskQueue: queue, Timing: timing}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	w := worker.New(tc, queue, worker.Options{})
@@ -346,7 +346,7 @@ func TestE2EHungLLMStillReplies(t *testing.T) {
 	senders := gateway.NewRegistry()
 	senders.Register(gateway.ChannelTelegram, sender)
 	queue := fmt.Sprintf("e2e-hung-%d", time.Now().UnixNano())
-	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second}
+	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second, BubbleGap: time.Millisecond}
 	svc := NewService(pool, box, hangingLLM{}, hangingLLM{}, tc, senders, Config{TaskQueue: queue, Timing: timing},
 		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	w := worker.New(tc, queue, worker.Options{})

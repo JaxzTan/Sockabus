@@ -27,6 +27,76 @@ type Situation struct {
 	ScamType string // classified label, or "" when unknown
 	Stage    playbook.Stage
 	Now      time.Time
+	Got      []Extracted // what extraction already pulled from this conversation, oldest first
+}
+
+// Extracted is one entity extraction found in the conversation. Values come from scammer text, so
+// SystemPrompt only ever renders the type, a sanitised bank/chain code and the last 4 characters,
+// never the raw value (TRD §7).
+type Extracted struct {
+	Type        string // bank_account | wallet | phone | url | handle
+	BankOrChain string // e.g. MBB, TRON; "" when unknown
+	Value       string // value_normalized
+}
+
+var reNotCode = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// tail returns the last 4 letters/digits of v, or "" when v is too short to be worth showing.
+func tail(v string) string {
+	v = reNotCode.ReplaceAllString(v, "")
+	if len(v) < 6 {
+		return ""
+	}
+	return v[len(v)-4:]
+}
+
+// describeGot renders the "what you already got" block, or "" when nothing was extracted yet.
+func describeGot(got []Extracted) string {
+	labels := map[string]string{"bank_account": "bank account", "wallet": "crypto wallet", "phone": "phone number", "url": "link", "handle": "other chat handle"}
+	have := map[string]int{}
+	var lines []string
+	for _, e := range got {
+		label, known := labels[e.Type]
+		if !known {
+			continue
+		}
+		have[e.Type]++
+		var details []string
+		if code := reNotCode.ReplaceAllString(e.BankOrChain, ""); code != "" {
+			if len(code) > 12 {
+				code = code[:12]
+			}
+			details = append(details, strings.ToUpper(code))
+		}
+		if (e.Type == "bank_account" || e.Type == "wallet") && tail(e.Value) != "" {
+			details = append(details, "ends "+tail(e.Value))
+		}
+		line := "- " + label
+		if len(details) > 0 {
+			line += " (" + strings.Join(details, ", ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var missing []string
+	for _, t := range []string{"bank_account", "wallet", "phone"} {
+		if have[t] == 0 {
+			missing = append(missing, labels[t])
+		}
+	}
+	var b strings.Builder
+	b.WriteString("\n## What they already gave you\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString("\nDo not ask again for something on this list; refer to it naturally if useful (\"the maybank one ending 1893 ah?\").")
+	if len(missing) > 0 {
+		fmt.Fprintf(&b, "\nStill missing, steer toward these when it fits: %s.", strings.Join(missing, ", "))
+	} else {
+		b.WriteString("\nYou have the main details. Keep them talking and ask for a backup account in case your transfer fails.")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 var languageNames = map[string]string{
@@ -98,6 +168,7 @@ func SystemPrompt(p Profile, s Situation) string {
 	if s.Stage.Example != "" {
 		fmt.Fprintf(&b, "- Tone example for this moment (do not copy it word for word): %q\n", s.Stage.Example)
 	}
+	b.WriteString(describeGot(s.Got))
 
 	b.WriteString(`
 ## Rules you always follow

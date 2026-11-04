@@ -67,3 +67,4 @@ gallery
 
 # Playwright test stack state (playwright/scripts/e2e-stack.sh)
 /playwright/.e2e/
+*.txt

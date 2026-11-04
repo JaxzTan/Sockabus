@@ -134,7 +134,8 @@ directories read-only under `/e2e`.
 | `SOCKABUS_LLM_PROVIDER` | `anthropic` (real, default) or `fake` (offline, CI) | persona replies, generation, AI summaries |
 | `SOCKABUS_REPLY_DELAY_MIN` | `1s` | FR-3 floor; refused when `SOCKABUS_ENV=prod` |
 | `SOCKABUS_REPLY_READ_MIN` / `_MAX` | `1s` / `2s` | first reply within a few seconds |
-| `SOCKABUS_TYPING_CPS` | `200` | short "typing…" phase |
+| `SOCKABUS_TYPING_WPM` | `3000` | short "typing…" phase |
+| `SOCKABUS_REPLY_BUBBLE_GAP` | `0s` | no pause between bubbles |
 | `SOCKABUS_TEMPORAL_TASK_QUEUE` | e.g. `sockabus-e2e` | keeps test workflows off another worker's queue |
 | `SOCKABUS_TG_APP_ID` / `_APP_HASH` | any values, with an empty session dir | Telegram connector on, so `/internal/accounts/{id}/connect` answers instead of 503 |
 | `SOCKABUS_E2E_PSQL` (test runner) | a psql command reading SQL on stdin, e.g. `docker compose exec -T postgres psql -U buru -d buru` | direct DB setup in `undecryptable.spec.ts` (corrupting one ciphertext); `playwright/scripts/e2e-stack.sh env` sets it for the local stack. Never Supabase (the helper refuses it). |
