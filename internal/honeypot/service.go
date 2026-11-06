@@ -106,7 +106,8 @@ func (s *Service) HandleInbound(ctx context.Context, in gateway.Inbound) error {
 		return nil // redelivered update
 	}
 	opts := client.StartWorkflowOptions{ID: conv.TemporalWorkflowID, TaskQueue: s.Cfg.TaskQueue}
-	input := workflows.ConversationInput{ConversationID: conv.ID, Timing: s.Cfg.Timing, Human: conv.Status == db.ConversationStatusHuman}
+	input := workflows.ConversationInput{ConversationID: conv.ID, Timing: s.Cfg.Timing, Human: conv.Status == db.ConversationStatusHuman,
+		Persona: workflows.ParsePersonaTiming(p.Profile)}
 	if _, err := s.Temporal.SignalWithStartWorkflow(ctx, conv.TemporalWorkflowID, workflows.SignalInbound,
 		workflows.InboundSignal{MessageID: msg.ID}, opts, workflows.ConversationWorkflow, input); err != nil {
 		return fmt.Errorf("signal conversation workflow: %w", err)

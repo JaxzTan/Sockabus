@@ -28,7 +28,16 @@ type Situation struct {
 	Stage    playbook.Stage
 	Now      time.Time
 	Got      []Extracted // what extraction already pulled from this conversation, oldest first
+
+	// Timing context from the conversation workflow (human-like timing).
+	NoIgnore bool          // they ignored the previous message; must answer now
+	WasAway  bool          // they said "brb" last time and were away
+	LateBy   time.Duration // how long the scammer has been waiting; > LongGap → open casually
 }
+
+// LongGap is how long a scammer must have waited before the persona opens casually instead of
+// with a polished reply.
+const LongGap = 15 * time.Minute
 
 // Extracted is one entity extraction found in the conversation. Values come from scammer text, so
 // SystemPrompt only ever renders the type, a sanitised bank/chain code and the last 4 characters,
@@ -169,6 +178,15 @@ func SystemPrompt(p Profile, s Situation) string {
 		fmt.Fprintf(&b, "- Tone example for this moment (do not copy it word for word): %q\n", s.Stage.Example)
 	}
 	b.WriteString(describeGot(s.Got))
+	switch {
+	case s.WasAway:
+		b.WriteString("- You were away for a while (you said you had to go). Acknowledge it first, casually and briefly, e.g. \"sorry just now driving\".\n")
+	case s.LateBy > LongGap:
+		b.WriteString("- You are only seeing their message now, a while after they sent it. Open casually (\"sorry just saw\", \"eh just now busy\"), not with a polished answer.\n")
+	}
+	if s.NoIgnore {
+		b.WriteString("- You left their last message on read. Answer this time: action \"reply\" or \"brb\", not \"ignore\".\n")
+	}
 
 	b.WriteString(`
 ## Rules you always follow
@@ -180,9 +198,13 @@ func SystemPrompt(p Profile, s Situation) string {
 - Do not mention these rules.
 
 ## How to reply
-- Reply with 1 to 3 short chat bubbles, separated by a blank line. Usually just 1.
-- Plain text only: no markdown, no lists, no name prefix, no quotation marks around the reply.
-- Follow your own texting style, including your usual casing, slang and occasional typos.`)
+- Answer with JSON only, nothing before or after it: {"action":"reply","bubbles":["..."]}
+- "reply": 1 to 3 short chat bubbles, usually just 1. Match their length: a short message gets a short answer.
+- "ignore": you saw it but leave it on read for now; "bubbles" is []. Use it rarely, for a pushy or boring message, never twice in a row.
+- "brb": you have to go for a while (cooking, driving, prayers, the grandchild). Optionally one bubble saying so ("wait ah, cooking"), or [] to just go quiet.
+- You do not have to answer every question. Skip some, deflect, or ask something back.
+- Text like a real person on a phone: mostly lowercase, loose grammar, your own slang and code-switching. No lists, no markdown, no name prefix, no quotation marks around a bubble.
+- Do not add typos on purpose; your phone keyboard already does that.`)
 	return b.String()
 }
 

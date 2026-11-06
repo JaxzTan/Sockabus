@@ -64,6 +64,10 @@ type Live struct {
 	TypingWPM         float64
 	BubbleGap         time.Duration // pause before each extra bubble in one reply
 	Inactivity        time.Duration
+	// HumanTiming turns on per-persona human-like reply timing (notice/read/think/type, sleep
+	// window, brb, typos). Default: on, unless the FR-3 floor is lowered (CI and tests), where
+	// the fixed READ_MIN/MAX, TYPING_WPM and BUBBLE_GAP timing above is used instead.
+	HumanTiming bool
 }
 
 func Load() (Config, error) {
@@ -176,6 +180,16 @@ func Load() (Config, error) {
 	}
 	if l.BubbleGap <= 0 {
 		l.BubbleGap = time.Millisecond // "0" means no gap; a zero Timing.BubbleGap would mean the 10 s default
+	}
+	switch strings.ToLower(os.Getenv("SOCKABUS_HUMAN_TIMING")) {
+	case "1", "true", "on":
+		l.HumanTiming = true
+	case "0", "false", "off":
+		l.HumanTiming = false
+	case "":
+		l.HumanTiming = l.ReplyDelayMin >= 10*time.Second
+	default:
+		return c, fmt.Errorf("SOCKABUS_HUMAN_TIMING must be 1 or 0")
 	}
 
 	if len(l.OperatorToken) < 24 {
