@@ -161,6 +161,44 @@ test("malformed requests: bad JSON, unknown fields, bad ids, out-of-range limit"
   }
 });
 
+// ───────────── Data too big: every size limit, just under and just over ─────────────
+// Limits in the Go code: message text 1-4000 chars (SimInbound, OperatorSend), persona name 1-100 chars
+// (CreatePersona), request body 1 MB (http.MaxBytesReader in the auth middleware), list limit ≤ 500.
+test("size limits: 4000-char messages, 100-char names, 1 MB body", async () => {
+  test.setTimeout(120_000);
+
+  await test.step("scammer message: 4000 chars accepted, 4001 refused", async () => {
+    const send = (text: string) => api.post("/internal/sim/messages", { data: { account_id: simAccountId, from: freshScammer("big"), text } });
+    expect((await send("a".repeat(4000))).status(), "exactly 4000 chars").toBe(202);
+    const over = await send("a".repeat(4001));
+    expect(over.status(), "4001 chars").toBe(400);
+    expect(await over.json()).toEqual({ error: expect.stringContaining("1-4000") });
+  });
+
+  await test.step("operator message: 4000 chars accepted, 4001 refused", async () => {
+    const conv = await openChat("bigop", "hello, still hiring?");
+    expect((await api.post(`/internal/conversations/${conv}/takeover`, { data: { mode: "human" } })).status()).toBe(200);
+    const say = (text: string) => api.post(`/internal/conversations/${conv}/operator-message`, { data: { text } });
+    expect((await say("b".repeat(4001))).status(), "4001 chars").toBe(400);
+    expect((await say("b".repeat(4000))).status(), "exactly 4000 chars").toBe(201);
+    await api.post(`/internal/conversations/${conv}/close`, { data: {} });
+  });
+
+  await test.step("persona name: 100 chars accepted, 101 refused", async () => {
+    const make = (name: string) => api.post("/internal/personas", { data: { name, age: 50, language_mix: { en: 1 } } });
+    const ok = await make("N".repeat(100));
+    expect(ok.status(), "exactly 100 chars").toBe(201);
+    await retirePersona(api, ((await ok.json()) as { id: number }).id);
+    expect((await make("N".repeat(101))).status(), "101 chars").toBe(400);
+  });
+
+  await test.step("request body over 1 MB is refused, not a 500", async () => {
+    const huge = await api.post("/internal/personas", { data: { name: "x", age: 50, language_mix: { en: 1 }, backstory: "z".repeat(1_100_000) } });
+    expect(huge.status(), "1.1 MB body").toBe(400);
+    expect(await huge.json()).toEqual({ error: expect.stringContaining("too large") });
+  });
+});
+
 // ───────────── Prompt injection (TRD §9; structural check only) ─────────────
 // @live: only meaningful with the real LLM (the fake one never reads the message). CI excludes @live.
 test("prompt injection: persona keeps replying and never echoes its instructions", { tag: "@live" }, async () => {
