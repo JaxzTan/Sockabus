@@ -8,6 +8,9 @@ export const BANKS: Record<string, string> = {
 };
 
 export const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
+// Same rule as internal/extraction.MaskDigits: a run of 6+ digits (spaces, dashes or dots allowed
+// between them) keeps its first 4 digits, the rest becomes "xxxx". Used for anything shown in the demo.
+export const maskDigits = (s: string) => s.replace(/\d(?:[ .\-]?\d){5,}/g, (run) => run.replace(/\D/g, "").slice(0, 4) + "xxxx");
 export const groupAcct = (d: string) => d.replace(/^(\d{4})(\d{4})(\d+)$/, "$1 $2 $3");
 export const clock = () => new Date().toTimeString().slice(0, 5);
 export const today = () => new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" });

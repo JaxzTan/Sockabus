@@ -4,7 +4,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ScamBars } from "@/components/charts";
 import { Badge, Head, Spin } from "@/components/ui";
 import { stamp } from "@/lib/api";
-import { BANKS, digits, plural, STAGES } from "@/lib/format";
+import { STORY_BANK, STORY_BANK_NAME } from "@/lib/bankStory";
+import { BANKS, digits, maskDigits, plural, STAGES } from "@/lib/format";
+import { ACTION_LABEL, REASON_LABEL } from "@/lib/risk";
 import {
   cancelTransfer,
   clearLookup,
@@ -13,10 +15,11 @@ import {
   runLookup,
   sendDecisionNow,
   setBankDraft,
-  USE_SAMPLE,
   useStore,
 } from "@/lib/store";
 import type { Confidence, Entity } from "@/lib/types";
+import { FraudConsole, seenLabel } from "./console";
+import { BankStory, useNow } from "./story";
 
 export function BankView() {
   const { data, ui } = useStore();
@@ -24,10 +27,10 @@ export function BankView() {
   const acctRef = useRef<HTMLInputElement>(null);
   const d = data.bank;
   const L = data.lastLookup;
+  const now = useNow();
   const scam = L?.res.scam_types?.[0] ?? "other";
-  // Newest captured account: sample data appends, the API lists newest first.
-  const accts = data.entities.filter((x) => x.type === "bank_account" && !x.sample);
-  const captured = USE_SAMPLE ? accts.at(-1) : accts[0];
+  const ev = L?.res.evidence;
+  // No quick fill from real captures: those are real scammer accounts, and the demo shows none.
 
   // ?entity=<id> from "Test in bank simulator →": fill bank + account from that entity (the number never
   // goes in the URL). A decision still inside its Undo window is sent now, and Transfer waits for the save.
@@ -43,7 +46,7 @@ export function BankView() {
   const saving = !!entityId && (!!ui.saving[entityId] || isDecisionWaiting(entityId));
   // The account the last lookup matched, for the "why" summary (same digits; same bank when both are known).
   const hit =
-    L?.result === "held" && L.acct
+    L?.result === "held" && L.acct && !L.scripted
       ? data.entities.filter((x) => x.type === "bank_account" && digits(x.value) === L.acct).sort((a, b) => Number(b.bank === L.bank) - Number(a.bank === L.bank))[0]
       : undefined;
 
@@ -85,13 +88,34 @@ export function BankView() {
         <div className="rh">
           <span className="ic">!</span>
           <div>
-            <h2>Transfer held</h2>
+            <h2>Transfer held for review</h2>
             <p>
-              This account is linked to a <b>{scam}</b> scam. Your RM {L.amt} has not left your account.
+              This account is linked to a <b>{scam}</b> scam. Your RM {L.amt} has not left your account. DemoBank&apos;s fraud team will review it. Nothing is frozen automatically.
             </p>
           </div>
         </div>
+        {L.scripted && <Badge word="Scripted demo response · not sent to Sockabus" tone="neutral" />}
         <div className="reasons">
+          {L.res.risk_score !== undefined && (
+            <div data-testid="held-score">
+              <span className="caps muted">Risk score</span>
+              <b className="mono">{L.res.risk_score.toFixed(2)}</b>
+              <small className="muted">rule-based</small>
+            </div>
+          )}
+          {L.res.recommended_action && (
+            <div data-testid="held-action">
+              <span className="caps muted">Recommended</span>
+              <b>{ACTION_LABEL[L.res.recommended_action]}</b>
+              <small className="mono muted">{L.res.recommended_action}</small>
+            </div>
+          )}
+          {L.res.reason && (
+            <div>
+              <span className="caps muted">Reason</span>
+              <b>{REASON_LABEL[L.res.reason] ?? L.res.reason}</b>
+            </div>
+          )}
           <div>
             <span className="caps muted">Confidence</span>
             <b>{confLabel(L.res.confidence)}</b>
@@ -106,13 +130,23 @@ export function BankView() {
           </div>
           <div>
             <span className="caps muted">First seen</span>
-            <b>{stamp(L.res.first_seen)}</b>
+            <b>{seenLabel(L.res.first_seen, now)}</b>
           </div>
           <div>
             <span className="caps muted">Checked in</span>
             <b className="mono">{L.ms} ms</b>
           </div>
         </div>
+        {ev && (
+          <blockquote className="evidence" data-testid="bank-evidence">
+            <span className="caps muted">Evidence from the scammer chat</span>
+            <p>&ldquo;{maskDigits(ev.excerpt)}&rdquo;</p>
+            <small className="mono">
+              {ev.transcript_ref}
+              {ev.persona_id ? ` · ${ev.persona_id}` : ""} · captured {stamp(ev.captured_at)}
+            </small>
+          </blockquote>
+        )}
         <div className="row-gap">
           <button className="btn btn-secondary" onClick={edit}>
             Edit recipient
@@ -147,16 +181,16 @@ export function BankView() {
   const steps: [string, string][] = !L
     ? [
         ["DemoBank asks Sockabus", "POST /v1/lookup with bank + account number"],
-        ["Sockabus checks verified intelligence", "Only human-verified accounts return high confidence"],
-        ["DemoBank decides", "Hold or send — in well under a second"],
+        ["Sockabus explains its answer", "Risk score, reason, first seen and chat evidence"],
+        ["DemoBank decides", "Hold for a person to review, or send. In well under a second"],
       ]
     : L.result === "held"
       ? [
-          ["DemoBank asked Sockabus", `POST /v1/lookup · bank account · ${L.bank}`],
+          L.scripted ? ["DemoBank asked Sockabus (scripted)", `Story account · ${STORY_BANK_NAME}`] : ["DemoBank asked Sockabus", `POST /v1/lookup · bank account · ${L.bank}`],
           L.res.confidence === "high"
             ? ["Sockabus found a verified record", "Captured from a scammer chat, confirmed by an operator"]
             : ["Sockabus found a record", "Captured from a scammer chat, not yet confirmed by an operator"],
-          ["DemoBank held the transfer", `Answer in ${L.ms} ms, inside the payment window`],
+          ["DemoBank held it for review", `Answer in ${L.ms} ms. A person decides in the fraud console`],
         ]
       : [
           ["DemoBank asked Sockabus", `POST /v1/lookup · bank account · ${L.bank}`],
@@ -166,7 +200,12 @@ export function BankView() {
 
   return (
     <>
-      <Head title="Bank simulator" sub="A pretend bank. Its fraud check calls the real Sockabus lookup before money leaves." right={<Badge word="Demo only · not a real bank" tone="neutral" />} />
+      <Head
+        title="Bank simulator"
+        sub="A pretend bank. Sockabus flags a mule account before anyone pays, and the bank holds the transfer with evidence, for a person to review."
+        right={<Badge word="Demo only · not a real bank" tone="neutral" />}
+      />
+      <BankStory />
       <div className="bankgrid">
         <section className="card bank" aria-label="DemoBank transfer">
           <div className="bank-h">
@@ -199,6 +238,7 @@ export function BankView() {
                 }}
                 data-testid="bank-select"
               >
+                <option value={STORY_BANK}>{STORY_BANK_NAME} · same bank (demo)</option>
                 {Object.entries(BANKS).map(([k, v]) => (
                   <option key={k} value={k}>
                     {v} ({k})
@@ -223,11 +263,6 @@ export function BankView() {
             </div>
             <div className="quick">
               <span>Quick fill:</span>
-              {captured && (
-                <button type="button" onClick={() => fillBank(captured.bank, captured.value)}>
-                  Account captured from chat
-                </button>
-              )}
               <button type="button" onClick={() => fillBank("CIMB", "800122334455")}>
                 Known loan-scam account
               </button>
@@ -280,9 +315,10 @@ export function BankView() {
               </li>
             ))}
           </ol>
-          <pre aria-label="Lookup response">{L ? <Json value={L.res} /> : "// press Transfer to see the response"}</pre>
+          <pre aria-label="Lookup response" data-testid="bank-json">{L ? <Json value={L.res} /> : "// press Transfer to see the response"}</pre>
           <p className="fine">The lookup token stays on our server. The browser never calls /v1/lookup directly.</p>
         </aside>
+        <FraudConsole />
         <ClientPanel />
         </div>
       </div>
@@ -300,7 +336,7 @@ function confLabel(c?: Confidence) {
 // Pretty JSON with the deciding fields picked out in mustard.
 function Json({ value }: { value: unknown }) {
   const text = JSON.stringify(value, null, 2);
-  const parts = text.split(/("match": true|"confidence": "high")/);
+  const parts = text.split(/("match": true|"confidence": "high"|"recommended_action": "[A-Z_]+"|"risk_score": [\d.]+)/);
   return (
     <>
       {parts.map((p, i) =>
@@ -333,7 +369,8 @@ function WhyFlagged({ e }: { e: Entity }) {
   if (e.scam !== "other") lines.push(`Scam type: ${e.scam}.`);
   if (e.status === "verified") lines.push(verifiedAt ? `Verified by an operator on ${stamp(new Date(verifiedAt).toISOString())}.` : "Verified by an operator.");
   if (e.sightings > 0) lines.push(`Seen ${plural(e.sightings, "time")} in scammer chats.`);
-  const quote = src ? (src.text.length > 200 ? src.text.slice(0, 199) + "…" : src.text) : "";
+  const masked = src ? maskDigits(src.text) : "";
+  const quote = masked.length > 200 ? masked.slice(0, 199) + "…" : masked;
   if (!lines.length && !quote) return null;
   return (
     <div className="why-bank" data-testid="bank-why">

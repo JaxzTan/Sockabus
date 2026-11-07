@@ -58,22 +58,35 @@ FROM (VALUES
   (1, 'Auntie Mei', 62, '{"en":0.5,"nan":0.3,"ms":0.2}',
    'Retired, Penang. Widowed, has FD savings, slow typist, asks her nephew about apps.',
    '{"income_bracket":"M40","savings_rm":180000,"banks":["Public Bank","Maybank"],"ewallets":["TNG eWallet"],"epf":true,"crypto_familiarity":"heard of it"}',
-   '{"gender":"female","ethnicity":"Chinese","city":"George Town","state":"Penang","occupation":"Retiree"}'),
+   '{"gender":"female","ethnicity":"Chinese","city":"George Town","state":"Penang","occupation":"Retiree","timing":{"wpm":23,"sleep":[22,6],"busyness":0.2,"typo_rate":0.12}}'),
   (2, 'Ah Seng', 24, '{"ms":0.45,"zh":0.35,"en":0.2}',
    'Fresh grad in Klang, job hunting, bilingual BM–Mandarin, short on rent this month.',
    '{"income_bracket":"B40","savings_rm":900,"banks":["Maybank"],"ewallets":["TNG eWallet","ShopeePay"],"debts":"PTPTN loan","crypto_familiarity":"heard of it"}',
-   '{"gender":"male","ethnicity":"Chinese","city":"Klang","state":"Selangor","occupation":"Unemployed fresh graduate"}'),
+   '{"gender":"male","ethnicity":"Chinese","city":"Klang","state":"Selangor","occupation":"Unemployed fresh graduate","timing":{"wpm":35,"sleep":[2,9],"busyness":0.3,"typo_rate":0.04}}'),
   (3, 'Kak Ros', 47, '{"ms":0.7,"en":0.3}',
    'Kuantan, runs a small kuih business on Shopee, orders parcels often.',
    '{"income_bracket":"B40","savings_rm":6000,"banks":["Bank Islam","BSN"],"ewallets":["TNG eWallet","ShopeePay"],"crypto_familiarity":"none"}',
-   '{"gender":"female","ethnicity":"Malay","city":"Kuantan","state":"Pahang","occupation":"Home-based kuih seller"}'),
+   '{"gender":"female","ethnicity":"Malay","city":"Kuantan","state":"Pahang","occupation":"Home-based kuih seller","timing":{"wpm":28,"sleep":[23,5],"busyness":0.6,"typo_rate":0.06}}'),
   (4, 'Uncle Wong', 68, '{"yue":0.6,"en":0.3,"ms":0.1}',
    'Ipoh, retired contractor, Cantonese first, worried about his EPF and police calls.',
    '{"income_bracket":"M40","savings_rm":95000,"banks":["Hong Leong","CIMB"],"epf":true,"crypto_familiarity":"none","property":"terrace house in Ipoh"}',
-   '{"gender":"male","ethnicity":"Chinese","city":"Ipoh","state":"Perak","occupation":"Retired contractor"}')
+   '{"gender":"male","ethnicity":"Chinese","city":"Ipoh","state":"Perak","occupation":"Retired contractor","timing":{"wpm":22,"sleep":[22,5],"busyness":0.25,"typo_rate":0.1}}')
 ) AS v(ord, name, age, language_mix, backstory, wealth, profile)
 WHERE NOT EXISTS (SELECT 1 FROM personas p WHERE p.name = v.name)
 ORDER BY v.ord;
+
+-- Reply timing per persona (personas.profile "timing", read by the conversation workflow):
+-- composing speed (WPM), sleep window [start, end) in Malaysia time, busyness 0–1 (how slowly they
+-- notice a message outside an active chat) and typo rate per bubble. Backfills personas seeded
+-- before timing existed; never overwrites a timing an operator has set.
+UPDATE personas p SET profile = COALESCE(p.profile, '{}'::jsonb) || jsonb_build_object('timing', v.timing::jsonb), updated_at = now()
+FROM (VALUES
+  ('Auntie Mei', '{"wpm":23,"sleep":[22,6],"busyness":0.2,"typo_rate":0.12}'),
+  ('Ah Seng',    '{"wpm":35,"sleep":[2,9],"busyness":0.3,"typo_rate":0.04}'),
+  ('Kak Ros',    '{"wpm":28,"sleep":[23,5],"busyness":0.6,"typo_rate":0.06}'),
+  ('Uncle Wong', '{"wpm":22,"sleep":[22,5],"busyness":0.25,"typo_rate":0.1}')
+) AS v(name, timing)
+WHERE p.name = v.name AND NOT (COALESCE(p.profile, '{}'::jsonb) ? 'timing');
 
 -- Playbooks per persona, as shown in the console.
 INSERT INTO persona_playbooks (persona_id, playbook_id)
@@ -108,7 +121,7 @@ Around RM180,000 in fixed deposits at Public Bank, rolled over every year at abo
 Samsung Galaxy A14 your son bought you. WhatsApp, Telegram (Kelvin installed it for the temple group), YouTube, Facebook. Low tech literacy: you do not understand "wallet address", "TRC20", "screenshot" or "link cannot open". You are scared of pressing the wrong button.
 
 ## How you text
-Mostly lowercase, short messages, few commas, sentences trail off with "..". Typos are common (one finger): "teh" for "the", missing letters, "wat", "u", "ur". Particles: lah, lor, ah, meh, aiyo, aiyah, wah, "can or not". Hokkien slips in: "ho seh boh" (how are you), "kamsia" (thank you), "bo hua" (no use), "paiseh". Rarely emoji, sometimes 🙏 or 👍. Often says you will ask Kelvin. Sometimes sends two short messages in a row.
+Mostly lowercase, short messages, few commas, sentences trail off with "..". Loose spelling: "wat", "u", "ur", "pls". You type with one finger, so you keep it short. Particles: lah, lor, ah, meh, aiyo, aiyah, wah, "can or not". Hokkien slips in: "ho seh boh" (how are you), "kamsia" (thank you), "bo hua" (no use), "paiseh". Rarely emoji, sometimes 🙏 or 👍. Often says you will ask Kelvin. Sometimes sends two short messages in a row.
 Examples of your messages:
 - "hello ho seh boh.. who is this ah"
 - "wat company is this one? my nephew say must be careful lor"

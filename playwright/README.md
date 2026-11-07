@@ -20,7 +20,7 @@ playwright/
 | `playwright/api/endpoints.spec.ts` | One test per HTTP route: `/healthz`, `/readyz` (server.go), every route in `internal/server/live.go` (incl. `/internal/sim/*`, `/internal/status`, `/v1/lookup`) and the console routes in `web/src/app/api/**/route.ts`. Status codes, 401 without/with a wrong token or session, response shape, 400/404 paths. |
 | `playwright/api/journeys.spec.ts` | a. persona generation · b. Telegram accounts/connect/chat · c. scam flow (web chat → replies → stages rapport/bait/payment_request/stall + stage history → takeover → extraction → verify → bank hit) · d. AI summary: conversation, persona and dashboard overview endpoints, then the dashboard card, persona detail and conversation view |
 | `playwright/api/demo-path.spec.ts` | v1.0 demo path through the API, one step per stage |
-| `playwright/ui/console.spec.ts` | e. bank simulator (`/demo/bank`): held hit and clean miss · f. web chat (`/demo/chat`) + conversations page: messages, stage bar, polling without reload, operator takeover |
+| `playwright/ui/console.spec.ts` | e. bank simulator (`/demo/bank`): held hit (risk score, recommended action, masked evidence, review queue) and clean miss · h. bank story: scripted flag → mock public check → held with evidence → reviewer confirms → RM prevented · i. customer view (`/demo/customer`): sent → warning → blocked after review · f. web chat (`/demo/chat`) + conversations page: messages, stage bar, polling without reload, operator takeover |
 | `playwright/ui/webchat.spec.ts` | web chat regression: reply + captured account |
 | `playwright/ui/undecryptable.spec.ts` | g. a real conversation with one stored message corrupted on the test DB (`SOCKABUS_E2E_PSQL`): the API flags it `undecryptable`, the conversations page shows a muted placeholder bubble, the persona keeps replying and the AI summary still works |
 
@@ -134,15 +134,19 @@ directories read-only under `/e2e`.
 | `SOCKABUS_LLM_PROVIDER` | `anthropic` (real, default) or `fake` (offline, CI) | persona replies, generation, AI summaries |
 | `SOCKABUS_REPLY_DELAY_MIN` | `1s` | FR-3 floor; refused when `SOCKABUS_ENV=prod` |
 | `SOCKABUS_REPLY_READ_MIN` / `_MAX` | `1s` / `2s` | first reply within a few seconds |
-| `SOCKABUS_TYPING_CPS` | `200` | short "typing…" phase |
+| `SOCKABUS_TYPING_WPM` | `3000` | short "typing…" phase |
+| `SOCKABUS_REPLY_BUBBLE_GAP` | `0s` | no pause between bubbles |
 | `SOCKABUS_TEMPORAL_TASK_QUEUE` | e.g. `sockabus-e2e` | keeps test workflows off another worker's queue |
 | `SOCKABUS_TG_APP_ID` / `_APP_HASH` | any values, with an empty session dir | Telegram connector on, so `/internal/accounts/{id}/connect` answers instead of 503 |
 | `SOCKABUS_E2E_PSQL` (test runner) | a psql command reading SQL on stdin, e.g. `docker compose exec -T postgres psql -U buru -d buru` | direct DB setup in `undecryptable.spec.ts` (corrupting one ciphertext); `playwright/scripts/e2e-stack.sh env` sets it for the local stack. Never Supabase (the helper refuses it). |
 
 The database must be migrated and seeded (`db/seed/001_demo.sql` creates operator 1 and the playbooks).
 The console (`web/`) needs `SOCKABUS_API_URL`, `SOCKABUS_OPERATOR_TOKEN` and console sign-in on
-(`SOCKABUS_CONSOLE_USER` / `SOCKABUS_CONSOLE_PASSWORD`); pass the same credentials to the tests, together
-with `SOCKABUS_API_URL`, `SOCKABUS_WEB_URL` and `SOCKABUS_OPERATOR_TOKEN`.
+(`SOCKABUS_SESSION_SECRET`, `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (dummy values are fine: the tests
+never reach Google) and `SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS` containing the test email). Sign-in is
+Google only, so the tests mint the session cookie themselves: pass the same `SOCKABUS_SESSION_SECRET` to
+the tests (and `SOCKABUS_E2E_CONSOLE_EMAIL` if not `e2e-operator@sockabus.test`), together with
+`SOCKABUS_API_URL`, `SOCKABUS_WEB_URL` and `SOCKABUS_OPERATOR_TOKEN`.
 
 CI runs both projects on every pull request (`.github/workflows/ci.yml`, job `e2e`) with the fake LLM.
 Journey b (Telegram) fails there until a Telegram session exists; journey d (AI summary) passes with the fake LLM too (canned summary text);

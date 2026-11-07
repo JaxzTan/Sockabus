@@ -7,6 +7,8 @@ import { expect, request, test, type APIRequestContext } from "@playwright/test"
 import {
   type Account,
   API_URL,
+  CONSOLE_EMAIL,
+  consoleSessionCookie,
   type Conversation,
   type ConversationDetail,
   type Entity,
@@ -399,9 +401,23 @@ test("POST /internal/entities/{id}/verify", async () => {
   expect(await res.json()).toMatchObject({ id: e.id, type: "bank_account", value_normalized: account, status: "verified", confidence: "high" });
 
   // Once verified, the bank's lookup matches (policy A).
-  const hit = (await (await api.post("/v1/lookup", { data: { type: "bank_account", value: account, bank: "MBB" } })).json()) as { sightings: number };
+  const hit = (await (await api.post("/v1/lookup", { data: { type: "bank_account", value: account, bank: "MBB" } })).json()) as {
+    sightings: number;
+    risk_score: number;
+    evidence?: { excerpt: string; transcript_ref: string; captured_at: string };
+  };
   expect(hit).toMatchObject({ match: true, status: "verified", confidence: "high", first_seen: isoDate, last_seen: isoDate });
   expect(hit.sightings).toBeGreaterThanOrEqual(1);
+  // Explained, rule-based answer (internal/risk): never a freeze, a verified account is held for review.
+  expect(hit).toMatchObject({ reason: "ACCOUNT_SUPPLIED_BY_SCAMMER", recommended_action: "HOLD_FOR_REVIEW", signals: expect.arrayContaining(["OPERATOR_VERIFIED"]) });
+  expect(hit.risk_score).toBeGreaterThanOrEqual(0.85);
+  expect(hit.risk_score).toBeLessThanOrEqual(0.99);
+  // The operator token gets the chat evidence, with the account number masked.
+  expect(hit.evidence, "operator lookups carry evidence").toBeDefined();
+  expect(hit.evidence!.transcript_ref).toMatch(/^conv_\d+$/);
+  expect(hit.evidence!.captured_at).toEqual(isoDate);
+  expect(hit.evidence!.excerpt).toContain(account.slice(0, 4) + "xxxx");
+  expect(hit.evidence!.excerpt, "no unmasked account number in evidence").not.toMatch(/\d{6,}/);
 
   expect((await api.post(`/internal/entities/${e.id}/verify`, { data: { decision: "perhaps" } })).status()).toBe(400);
   expect((await api.post(`/internal/entities/999999999/verify`, { data: { decision: "verified" } })).status()).toBe(404);
@@ -642,31 +658,33 @@ test("GET /internal/accounts/{id}/health", async () => {
 
 // ───────────────────────── web/src/app/api/**/route.ts ─────────────────────────
 
-// A console context signed in through the real sign-in route.
+// A console context with a session cookie (Google sign-in can't be driven by a test; see consoleSessionCookie).
 async function consoleSession(): Promise<APIRequestContext> {
-  const ctx = await request.newContext({ baseURL: WEB_URL });
-  const user = process.env.SOCKABUS_CONSOLE_USER;
-  const password = process.env.SOCKABUS_CONSOLE_PASSWORD;
-  expect(user && password, "set SOCKABUS_CONSOLE_USER / SOCKABUS_CONSOLE_PASSWORD (console sign-in)").toBeTruthy();
-  const res = await ctx.post("/api/auth/sign-in", { form: { user: user!, password: password! }, maxRedirects: 0 });
-  expect(res.status()).toBe(303);
-  return ctx;
+  const { hostname } = new URL(WEB_URL);
+  const c = consoleSessionCookie();
+  return request.newContext({
+    baseURL: WEB_URL,
+    storageState: { cookies: [{ ...c, domain: hostname, path: "/", expires: -1, httpOnly: true, secure: false, sameSite: "Lax" }], origins: [] },
+  });
 }
 
-test("web POST /api/auth/sign-in", async () => {
+test("web /api/auth sign-in routes", async () => {
   const ctx = await request.newContext({ baseURL: WEB_URL });
-  const wrongPw = await ctx.post("/api/auth/sign-in", { form: { user: process.env.SOCKABUS_CONSOLE_USER ?? "", password: "definitely-wrong", next: "/verify" }, maxRedirects: 0 });
-  expect(wrongPw.status()).toBe(303);
-  expect(wrongPw.headers()["location"]).toBe("/sign-in?error=wrong&next=%2Fverify");
-  expect(wrongPw.headers()["set-cookie"] ?? "").not.toContain("sockabus_session=");
-
-  const ok = await ctx.post("/api/auth/sign-in", {
-    form: { user: process.env.SOCKABUS_CONSOLE_USER ?? "", password: process.env.SOCKABUS_CONSOLE_PASSWORD ?? "", next: "/verify" },
-    maxRedirects: 0,
-  });
-  expect(ok.status()).toBe(303);
-  expect(ok.headers()["location"]).toBe("/verify");
-  expect(ok.headers()["set-cookie"]).toMatch(/sockabus_session=[^;]+;.*HttpOnly/i);
+  // Password sign-in is gone.
+  expect((await ctx.post("/api/auth/sign-in", { form: { user: "x", password: "y" }, maxRedirects: 0 })).status()).not.toBe(303);
+  // Google start: off to Google with state, nonce and a PKCE S256 challenge in a short-lived httpOnly cookie.
+  const start = await ctx.get("/api/auth/google?next=/verify", { maxRedirects: 0 });
+  expect(start.status()).toBe(307);
+  const to = new URL(start.headers()["location"]);
+  expect(to.origin).toBe("https://accounts.google.com");
+  for (const k of ["state", "nonce", "code_challenge", "client_id", "redirect_uri"]) expect(to.searchParams.get(k), k).toBeTruthy();
+  expect(to.searchParams.get("code_challenge_method")).toBe("S256");
+  expect(start.headers()["set-cookie"]).toMatch(/sockabus_oauth=[^;]+;.*HttpOnly/i);
+  // A callback whose state doesn't match the flow cookie is refused, and no session is set.
+  const bad = await ctx.get("/api/auth/google/callback?code=x&state=not-the-state", { maxRedirects: 0 });
+  expect(bad.status()).toBe(303);
+  expect(bad.headers()["location"]).toBe("/sign-in?error=state&next=%2Fverify");
+  expect(bad.headers()["set-cookie"] ?? "").not.toContain("sockabus_session=");
   await ctx.dispose();
 });
 
@@ -680,7 +698,7 @@ test("web GET /api/auth/me", async () => {
   const ctx = await consoleSession();
   const res = await ctx.get("/api/auth/me");
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ user: process.env.SOCKABUS_CONSOLE_USER, gate: true });
+  expect(await res.json()).toEqual({ user: CONSOLE_EMAIL, gate: true });
   await ctx.dispose();
 });
 

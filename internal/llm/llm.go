@@ -78,11 +78,13 @@ func Normalize(turns []Turn) []Turn {
 
 // Config selects and configures a provider.
 type Config struct {
-	Provider      string // anthropic (default) | gemini | fake | none
+	Provider      string // anthropic (default) | gemini | openai (any OpenAI-compatible API) | fake | none
 	Model         string
 	GeminiKey     string
 	AnthropicKey  string
 	ThinkingLevel string // gemini only: low | medium | high
+	OpenAIBaseURL string // openai only: e.g. https://<provider>/v1 (ILMU, MaLLaM, SEA-LION, vLLM, Ollama)
+	OpenAIKey     string // openai only; may be empty for a local server
 }
 
 // New returns a Client for cfg, or (nil, nil) when Provider is "none" or the key is missing, so
@@ -99,6 +101,11 @@ func New(cfg Config) (Client, error) {
 			return nil, nil
 		}
 		return NewAnthropic(cfg.AnthropicKey, cfg.Model), nil
+	case "openai", "openai-compat":
+		if cfg.OpenAIBaseURL == "" || cfg.Model == "" {
+			return nil, errors.New("llm: provider openai needs SOCKABUS_OPENAI_BASE_URL and a model")
+		}
+		return NewOpenAICompat(cfg.OpenAIBaseURL, cfg.OpenAIKey, cfg.Model), nil
 	case "fake":
 		return NewFake(), nil
 	case "none", "off":

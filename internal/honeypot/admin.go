@@ -18,6 +18,7 @@ import (
 	"github.com/JaxzTan/Buru_AI/internal/extraction"
 	"github.com/JaxzTan/Buru_AI/internal/gateway"
 	"github.com/JaxzTan/Buru_AI/internal/persona"
+	"github.com/JaxzTan/Buru_AI/internal/risk"
 )
 
 // ---- personas (FR-1, TR-1) ----
@@ -327,17 +328,39 @@ type LookupRequest struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
 	Bank  string `json:"bank"`
+	// WithEvidence adds a masked chat excerpt to a hit. Set by the server for the operator token only,
+	// never from the request body: raw scammer messages can hold third parties' personal data (PDPA),
+	// so customer API keys get the score and reason but not the excerpt.
+	WithEvidence bool `json:"-"`
 }
 
+// LookupResponse: a miss is exactly {"match":false}. A hit adds the explained, rule-based risk
+// fields (internal/risk) so a bank can act on it, plus evidence for operator-token callers.
 type LookupResponse struct {
-	Match      bool       `json:"match"`
-	Confidence string     `json:"confidence,omitempty"`
-	Status     string     `json:"status,omitempty"` // verified | unverified (unverified only for phone, url, handle)
-	ScamTypes  []string   `json:"scam_types,omitempty"`
-	FirstSeen  *time.Time `json:"first_seen,omitempty"`
-	LastSeen   *time.Time `json:"last_seen,omitempty"`
-	Sightings  int32      `json:"sightings,omitempty"`
+	Match             bool       `json:"match"`
+	Confidence        string     `json:"confidence,omitempty"`
+	Status            string     `json:"status,omitempty"` // verified | unverified (unverified only for phone, url, handle)
+	ScamTypes         []string   `json:"scam_types,omitempty"`
+	FirstSeen         *time.Time `json:"first_seen,omitempty"`
+	LastSeen          *time.Time `json:"last_seen,omitempty"`
+	Sightings         int32      `json:"sightings,omitempty"`
+	RiskScore         float64    `json:"risk_score,omitempty"`
+	Reason            string     `json:"reason,omitempty"`
+	Signals           []string   `json:"signals,omitempty"`
+	RecommendedAction string     `json:"recommended_action,omitempty"`
+	Evidence          *Evidence  `json:"evidence,omitempty"`
 }
+
+// Evidence is where Sockabus first saw the identifier: a masked excerpt of the scammer's message
+// (6+ digit runs become "1234xxxx", max 160 characters) and references to the transcript.
+type Evidence struct {
+	Excerpt       string    `json:"excerpt"`
+	TranscriptRef string    `json:"transcript_ref"`       // "conv_<conversation id>"
+	PersonaID     string    `json:"persona_id,omitempty"` // "p_<persona id>"
+	CapturedAt    time.Time `json:"captured_at"`
+}
+
+const evidenceMaxRunes = 160
 
 // Lookup serves POST /v1/lookup from PostgreSQL. (The Redis cache, API keys and batch lookup are M3.)
 func (s *Service) Lookup(ctx context.Context, req LookupRequest) (LookupResponse, error) {
@@ -369,7 +392,42 @@ func (s *Service) Lookup(ctx context.Context, req LookupRequest) (LookupResponse
 		scam = append(scam, string(st))
 	}
 	first, last := e.FirstSeen.UTC(), e.LastSeen.UTC()
-	return LookupResponse{Match: true, Confidence: conf, Status: string(e.Status), ScamTypes: scam, FirstSeen: &first, LastSeen: &last, Sightings: e.SightingsCount}, nil
+	a := risk.Assess(string(e.Type), string(e.Status), conf, e.SightingsCount)
+	res := LookupResponse{Match: true, Confidence: conf, Status: string(e.Status), ScamTypes: scam, FirstSeen: &first, LastSeen: &last, Sightings: e.SightingsCount,
+		RiskScore: a.Score, Reason: a.Reason, Signals: a.Signals, RecommendedAction: a.Action}
+	if req.WithEvidence {
+		res.Evidence = s.lookupEvidence(ctx, e.ID)
+	}
+	return res, nil
+}
+
+// lookupEvidence returns the masked excerpt of the earliest message the entity was extracted from,
+// or nil when there is none (purged after retention, or undecryptable). Evidence is best-effort: a
+// failure here never fails the lookup.
+func (s *Service) lookupEvidence(ctx context.Context, entityID int64) *Evidence {
+	sightings, err := s.Q.ListSightings(ctx, entityID) // oldest first
+	if err != nil {
+		s.Log.Error("lookup evidence: sightings", "entity_id", entityID, "err", err)
+		return nil
+	}
+	for _, sg := range sightings {
+		m, err := s.Q.GetMessage(ctx, sg.MessageID)
+		if err != nil {
+			continue // purged by retention (000013)
+		}
+		pm, err := s.decrypt(m)
+		if err != nil || strings.TrimSpace(pm.Text) == "" {
+			continue
+		}
+		ev := &Evidence{Excerpt: extraction.Excerpt(pm.Text, evidenceMaxRunes), TranscriptRef: fmt.Sprintf("conv_%d", sg.ConversationID), CapturedAt: sg.ExtractedAt.UTC()}
+		if c, err := s.Q.GetConversation(ctx, sg.ConversationID); err == nil {
+			if acct, err := s.Q.GetHoneypotAccount(ctx, c.AccountID); err == nil {
+				ev.PersonaID = fmt.Sprintf("p_%d", acct.PersonaID)
+			}
+		}
+		return ev
+	}
+	return nil
 }
 
 // lookupBank returns the bank/chain to match: the caller's, or for wallets the chain implied by

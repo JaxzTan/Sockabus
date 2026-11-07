@@ -26,6 +26,7 @@ import (
 	"github.com/JaxzTan/Buru_AI/internal/gateway"
 	"github.com/JaxzTan/Buru_AI/internal/llm"
 	"github.com/JaxzTan/Buru_AI/internal/msgcrypt"
+	"github.com/JaxzTan/Buru_AI/internal/rag"
 	"github.com/JaxzTan/Buru_AI/internal/workflows"
 )
 
@@ -36,6 +37,20 @@ type Config struct {
 	// personas.demo_identifiers in clear next to their ciphertext (000012 phase 1). Turn it off
 	// (SOCKABUS_IDENTIFIER_PLAINTEXT=0) before applying the pending drop_plaintext_identifiers migration.
 	PlaintextIdentifiers bool
+	// TelegramRepliesOff pauses every bot reply on Telegram accounts (SOCKABUS_TG_REPLIES=0).
+	TelegramRepliesOff bool
+	// PersonaTiming: env overrides of personas.profile "timing" (SOCKABUS_PERSONA_TIMING).
+	PersonaTiming map[string]workflows.PersonaTiming
+}
+
+// personaTiming is the persona's reply timing: profile "timing" with env overrides, then defaults.
+func (s *Service) personaTiming(p db.Persona) workflows.PersonaTiming {
+	return workflows.ResolvePersonaTiming(p.Profile, p.ID, p.Name, s.Cfg.PersonaTiming)
+}
+
+// repliesPaused reports whether bot replies on this account are switched off (SOCKABUS_TG_REPLIES=0).
+func (s *Service) repliesPaused(acct db.HoneypotAccount) bool {
+	return s.Cfg.TelegramRepliesOff && acct.Channel == db.ChannelTelegram
 }
 
 type Service struct {
@@ -49,6 +64,7 @@ type Service struct {
 	Temporal   client.Client
 	Senders    *gateway.Registry
 	Sim        gateway.Sender // dev-only simulated channel (internal/channel/sim); nil when disabled
+	RAG        *rag.Index     // past successful replies for the persona prompt; nil = off (SOCKABUS_RAG=0)
 	Cfg        Config
 	Log        *slog.Logger
 	Now        func() time.Time
@@ -106,7 +122,8 @@ func (s *Service) HandleInbound(ctx context.Context, in gateway.Inbound) error {
 		return nil // redelivered update
 	}
 	opts := client.StartWorkflowOptions{ID: conv.TemporalWorkflowID, TaskQueue: s.Cfg.TaskQueue}
-	input := workflows.ConversationInput{ConversationID: conv.ID, Timing: s.Cfg.Timing, Human: conv.Status == db.ConversationStatusHuman}
+	input := workflows.ConversationInput{ConversationID: conv.ID, Timing: s.Cfg.Timing, Human: conv.Status == db.ConversationStatusHuman,
+		Persona: s.personaTiming(p)}
 	if _, err := s.Temporal.SignalWithStartWorkflow(ctx, conv.TemporalWorkflowID, workflows.SignalInbound,
 		workflows.InboundSignal{MessageID: msg.ID}, opts, workflows.ConversationWorkflow, input); err != nil {
 		return fmt.Errorf("signal conversation workflow: %w", err)

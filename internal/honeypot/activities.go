@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -163,7 +165,8 @@ func (a *Activities) ProcessInbound(ctx context.Context, in workflows.ProcessInb
 	case count > 0 && count%SummaryEveryN == 0:
 		s.RefreshConversationSummaryAsync(conv.ID, "every_n")
 	}
-	return workflows.ProcessInboundResult{Stage: next, ScamType: scam, NewEntities: newEntities}, nil
+	return workflows.ProcessInboundResult{Stage: next, ScamType: scam, NewEntities: newEntities,
+		Chars: utf8.RuneCountInString(pm.Text), Question: strings.Contains(pm.Text, "?")}, nil
 }
 
 // recordEntity upserts an entity and appends a sighting (which also bumps sightings_count).
@@ -235,7 +238,7 @@ func (a *Activities) setScamType(ctx context.Context, conv db.Conversation, pers
 // MarkRead shows the scammer's messages as read. Best effort: a failure must not delay the reply.
 func (a *Activities) MarkRead(ctx context.Context, in workflows.ConversationRef) error {
 	conv, acct, sender, err := a.target(ctx, in.ConversationID)
-	if err != nil {
+	if err != nil || a.S.repliesPaused(acct) {
 		return nil
 	}
 	if err := sender.MarkRead(ctx, acct.ID, conv.ScammerPeerRef.String); err != nil {
@@ -244,8 +247,10 @@ func (a *Activities) MarkRead(ctx context.Context, in workflows.ConversationRef)
 	return nil
 }
 
-// GenerateReply builds the persona prompt and asks the LLM for the next reply (FR-1, FR-4).
-func (a *Activities) GenerateReply(ctx context.Context, in workflows.ConversationRef) (workflows.GenerateReplyResult, error) {
+// GenerateReply builds the persona prompt and asks the LLM for the next reply (FR-1, FR-4). The
+// model answers {"action","bubbles"}: reply, ignore (never twice in a row) or brb; the workflow
+// owns the timing. Bubbles get the persona's typo rate, then pass the output guard again.
+func (a *Activities) GenerateReply(ctx context.Context, in workflows.GenerateReplyInput) (workflows.GenerateReplyResult, error) {
 	s := a.S
 	conv, err := s.Q.GetConversation(ctx, in.ConversationID)
 	if err != nil {
@@ -257,6 +262,10 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 	acct, err := s.Q.GetHoneypotAccount(ctx, conv.AccountID)
 	if err != nil {
 		return workflows.GenerateReplyResult{}, err
+	}
+	if s.repliesPaused(acct) {
+		s.Log.Info("telegram replies are off (SOCKABUS_TG_REPLIES=0): no reply generated", "conversation_id", conv.ID)
+		return workflows.GenerateReplyResult{Source: "none"}, nil
 	}
 	p, err := s.Q.GetPersona(ctx, acct.PersonaID)
 	if err != nil {
@@ -285,6 +294,7 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 	}
 
 	prof := persona.Profile{Name: p.Name, Age: int(p.Age.Int16), LanguageMix: p.LanguageMix, Backstory: p.Backstory.String, Wealth: p.WealthProfile}
+	prof.Ethnicity = profileEthnicity(p.Profile)
 	if pv, err := s.Q.LatestPromptVersion(ctx, p.ID); err == nil {
 		prof.SystemPrompt = pv.SystemPrompt
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -294,7 +304,27 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 	if conv.ScamType.Valid {
 		scam = string(conv.ScamType.ScamType)
 	}
-	system := persona.SystemPrompt(prof, persona.Situation{Channel: string(acct.Channel), ScamType: scam, Stage: stage, Now: s.Now()})
+	var got []persona.Extracted
+	if ents, err := s.Q.ListConversationEntities(ctx, conv.ID); err != nil {
+		s.Log.Warn("listing extracted entities failed; persona replies without them", "conversation_id", conv.ID, "err", err)
+	} else {
+		for _, e := range ents {
+			if e.Status != db.EntityStatusRejected {
+				got = append(got, persona.Extracted{Type: string(e.Type), BankOrChain: e.BankOrChain.String, Value: e.ValueNormalized})
+			}
+		}
+	}
+	sit := persona.Situation{Channel: string(acct.Channel), ScamType: scam, Stage: stage, Now: s.Now(), Got: got,
+		NoIgnore: in.NoIgnore, WasAway: in.WasAway}
+	sit.Similar = s.similarReplies(hist, conv.ID, p.ID, scam, string(persona.GroupFor(prof.Ethnicity, prof.LanguageMix)))
+	// How long the scammer has waited: since their first message after the persona's last one.
+	for i := len(hist) - 1; i >= 0 && hist[i].Direction == string(db.MessageDirectionInbound); i-- {
+		if !hist[i].SentAt.IsZero() {
+			sit.LateBy = s.Now().Sub(hist[i].SentAt)
+		}
+	}
+	system := persona.SystemPrompt(prof, sit)
+	typoRate := s.personaTiming(p).TypoRate
 
 	turns := make([]llm.Turn, 0, len(hist))
 	for _, m := range hist {
@@ -305,13 +335,14 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 		turns = append(turns, llm.Turn{Role: role, Text: m.Text})
 	}
 
+	retryNote := "(Your previous draft broke the rules above. Write a new reply, fully in character.)"
 	for try := 0; try < 2; try++ {
 		sys := system
 		if try > 0 {
-			sys += "\n\n(Your previous draft broke the rules above. Write a new reply, fully in character.)"
+			sys += "\n\n" + retryNote
 		}
 		gctx, cancel := context.WithTimeout(ctx, personaLLMTimeout)
-		out, err := s.PersonaLLM.Generate(gctx, llm.Request{System: sys, Turns: turns, MaxOutputTokens: 2048, Effort: llm.EffortLow})
+		out, err := s.PersonaLLM.Generate(gctx, llm.Request{System: sys, Turns: turns, MaxOutputTokens: 2048, Effort: llm.EffortMedium})
 		timedOut := gctx.Err() != nil
 		cancel()
 		if err != nil {
@@ -323,12 +354,32 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.Conversatio
 			s.Log.Warn("persona LLM unavailable; using playbook line", "conversation_id", conv.ID, "err", err)
 			return fallbackReply(stage, hist), nil
 		}
-		if bubbles, ok := persona.Guard(p.Name, out); ok {
-			return workflows.GenerateReplyResult{Bubbles: bubbles, Source: "llm"}, nil
+		action, text := persona.ParseReply(out)
+		switch {
+		case action == persona.ActionIgnore && in.NoIgnore:
+			retryNote = "(You already left their last message on read. Answer this time, fully in character.)"
+			continue
+		case action == persona.ActionIgnore || (action == persona.ActionBrb && strings.TrimSpace(text) == ""):
+			return workflows.GenerateReplyResult{Source: "llm", Action: action}, nil
+		}
+		if bubbles, ok := persona.Guard(p.Name, text); ok {
+			return workflows.GenerateReplyResult{Bubbles: withTypos(p.Name, bubbles, typoRate), Source: "llm", Action: action}, nil
 		}
 		s.Log.Warn("persona reply rejected by output guard", "conversation_id", conv.ID, "try", try+1)
 	}
 	return fallbackReply(stage, hist), nil
+}
+
+// withTypos injects the persona's fat-finger typos and re-checks every bubble with the output
+// guard; if any bubble fails, the clean bubbles are sent instead.
+func withTypos(name string, bubbles []string, rate float64) []string {
+	typed := persona.AddTypos(bubbles, rate, rand.New(rand.NewSource(time.Now().UnixNano())))
+	for _, b := range typed {
+		if g, ok := persona.Guard(name, b); !ok || len(g) != 1 || g[0] != b {
+			return bubbles
+		}
+	}
+	return typed
 }
 
 var fillers = []string{"hmm ok..", "sorry just saw ur msg", "can explain again? i dont really understand", "wait ah, my phone very slow"}
@@ -356,6 +407,9 @@ func (a *Activities) SimulateTyping(ctx context.Context, in workflows.SimulateTy
 	conv, acct, sender, err := a.target(ctx, in.ConversationID)
 	if err != nil {
 		return err
+	}
+	if a.S.repliesPaused(acct) {
+		return nil
 	}
 	peer := conv.ScammerPeerRef.String
 	if err := sender.SetOnline(ctx, acct.ID, true); err != nil {
@@ -388,6 +442,9 @@ func (a *Activities) SendReply(ctx context.Context, in workflows.SendReplyInput)
 	}
 	if conv.Status != db.ConversationStatusBot {
 		return workflows.SendReplyResult{Sent: false, Reason: "conversation is " + string(conv.Status)}, nil
+	}
+	if a.S.repliesPaused(acct) {
+		return workflows.SendReplyResult{Sent: false, Reason: "telegram replies are off (SOCKABUS_TG_REPLIES=0)"}, nil
 	}
 	if err := sender.Send(ctx, acct.ID, conv.ScammerPeerRef.String, in.Text, in.RandomID); err != nil {
 		return workflows.SendReplyResult{}, err

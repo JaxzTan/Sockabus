@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/JaxzTan/Buru_AI/internal/honeypot"
 	"github.com/JaxzTan/Buru_AI/internal/llm"
 	"github.com/JaxzTan/Buru_AI/internal/msgcrypt"
+	"github.com/JaxzTan/Buru_AI/internal/rag"
 	"github.com/JaxzTan/Buru_AI/internal/server"
 	"github.com/JaxzTan/Buru_AI/internal/workflows"
 )
@@ -89,7 +91,20 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		srv = srv.WithDemo(demo)
+		token := os.Getenv("SOCKABUS_OPERATOR_TOKEN")
+		if cfg.Env == "prod" && len(token) < 24 {
+			return errors.New("SOCKABUS_ENV=prod in demo mode needs SOCKABUS_OPERATOR_TOKEN (at least 24 characters): the API would be open otherwise")
+		}
+		srv = srv.WithDemo(demo).WithOperatorToken(token)
+	}
+
+	srv = srv.WithCORS(strings.Split(os.Getenv("SOCKABUS_CORS_ORIGINS"), ","))
+	if strings.EqualFold(os.Getenv("SOCKABUS_RATE_LIMIT"), "off") {
+		if cfg.Env == "prod" {
+			return errors.New("SOCKABUS_RATE_LIMIT=off is not allowed with SOCKABUS_ENV=prod")
+		}
+		log.Warn("SOCKABUS_RATE_LIMIT=off: per-client rate limits disabled")
+		srv = srv.WithoutRateLimit()
 	}
 
 	if err := w.Start(); err != nil {
@@ -128,6 +143,17 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 	if err != nil {
 		return err
 	}
+	// Persona generation keeps the main provider; SOCKABUS_PERSONA_PROVIDER swaps only chat replies.
+	baseGenLLM := personaLLM
+	if l.PersonaProvider != "" && l.PersonaProvider != l.LLMProvider {
+		if baseGenLLM, err = llm.New(llm.Config{Provider: l.LLMProvider, GeminiKey: l.GeminiAPIKey, AnthropicKey: l.AnthropicAPIKey, ThinkingLevel: l.PersonaThinking}); err != nil {
+			return err
+		}
+		if personaLLM, err = llm.New(llm.Config{Provider: l.PersonaProvider, Model: l.PersonaModel, GeminiKey: l.GeminiAPIKey, AnthropicKey: l.AnthropicAPIKey,
+			ThinkingLevel: l.PersonaThinking, OpenAIBaseURL: l.OpenAIBaseURL, OpenAIKey: l.OpenAIAPIKey}); err != nil {
+			return err
+		}
+	}
 	extractLLM, err := llm.New(llm.Config{Provider: l.LLMProvider, Model: l.ExtractModel, GeminiKey: l.GeminiAPIKey, AnthropicKey: l.AnthropicAPIKey, ThinkingLevel: "low"})
 	if err != nil {
 		return err
@@ -140,7 +166,9 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 		log.Warn("no LLM key configured: personas will answer with playbook example lines only")
 	} else {
 		log.Info("persona LLM ready", "llm", personaLLM.Name(), "per_try_timeout", l.LLMTryTimeout, "generation_timeout", l.PersonaGenTimeout)
-		genLLM = llm.Retrying{Inner: personaLLM, Attempts: 2, PerTry: l.PersonaGenTimeout, Backoff: time.Second}
+		if baseGenLLM != nil {
+			genLLM = llm.Retrying{Inner: baseGenLLM, Attempts: 2, PerTry: l.PersonaGenTimeout, Backoff: time.Second}
+		}
 		// Retry stalled or briefly failing calls with a fresh short deadline (see llm.Retrying).
 		personaLLM = llm.Retrying{Inner: personaLLM, Attempts: 3, PerTry: l.LLMTryTimeout, Backoff: 500 * time.Millisecond}
 	}
@@ -157,7 +185,12 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 
 	honeypot.SetPersonaLLMTimeout(l.LLMTimeout)
 	senders := gateway.NewRegistry()
-	timing := workflows.Timing{MinDelay: l.ReplyDelayMin, ReadMin: l.ReplyReadMin, ReadMax: l.ReplyReadMax, CharsPerSecond: l.TypingCPS, Inactivity: l.Inactivity}
+	timing := workflows.Timing{MinDelay: l.ReplyDelayMin, ReadMin: l.ReplyReadMin, ReadMax: l.ReplyReadMax, WordsPerMinute: l.TypingWPM, BubbleGap: l.BubbleGap, Inactivity: l.Inactivity, HumanLike: l.HumanTiming}
+	if timing.HumanLike {
+		log.Info("reply mode: real person (BOT_STATUS=1): human-like per-persona timing")
+	} else {
+		log.Info("reply mode: quick testing (BOT_STATUS=2): fixed timing", "read_min", timing.ReadMin, "read_max", timing.ReadMax, "wpm", timing.WordsPerMinute)
+	}
 	if timing.MinDelay < workflows.MinReplyDelay {
 		log.Warn("SOCKABUS_REPLY_DELAY_MIN lowers the FR-3 reply floor below 10s: use only in CI and tests", "floor", timing.MinDelay)
 	}
@@ -165,8 +198,21 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 		log.Warn("SOCKABUS_REPLY_READ_MIN below the reply floor; replies still wait for the floor", "configured", timing.ReadMin, "floor", timing.MinDelay)
 	}
 	svc := honeypot.NewService(pool, box, personaLLM, extractLLM, tc, senders,
-		honeypot.Config{TaskQueue: cfg.TemporalTaskQueue, Timing: timing, PlaintextIdentifiers: l.PlaintextIdentifiers}, log)
+		honeypot.Config{TaskQueue: cfg.TemporalTaskQueue, Timing: timing, PlaintextIdentifiers: l.PlaintextIdentifiers,
+			TelegramRepliesOff: !l.TelegramReplies, PersonaTiming: l.PersonaTiming}, log)
+	if !l.TelegramReplies {
+		log.Warn("SOCKABUS_TG_REPLIES=0: Telegram personas will not reply (messages are still stored and extracted)")
+	}
+	if len(l.PersonaTiming) > 0 {
+		log.Info("persona timing overrides from SOCKABUS_PERSONA_TIMING", "personas", len(l.PersonaTiming))
+	}
 	svc.GenLLM, svc.SummaryLLM = genLLM, summaryLLM
+	if l.RAG {
+		svc.RAG = &rag.Index{}
+		go svc.RunRAG(ctx, l.RAGRefresh)
+	} else {
+		log.Info("SOCKABUS_RAG=0: persona prompts get no examples from past chats")
+	}
 	var simHub *sim.Hub
 	if l.SimEnabled {
 		simHub = sim.NewHub()

@@ -31,7 +31,7 @@ Shortcuts for local development. Run every target from the repo root.
 | `make web` | `cd web && pnpm dev` | Running the dashboard on `:3000` (proxies `/api/*` to `:8080`) |
 | `make arch` | `open docs/architecture.html` (`xdg-open` on Linux) | Viewing the architecture diagram in the browser |
 | `make test` | `go test -race ./...` | Unit tests. DB tests are skipped |
-| `make test-db` | `go test ./internal/db/` on `MIGRATE_DB` | DB integration tests. Needs migrations applied |
+| `make test-db` | `go test ./internal/db/` on `TEST_DB` | DB integration tests. Needs `make e2e-up` (scratch DB, migrated + seeded) |
 | `make lint` | `go vet` + golangci-lint | Before opening a PR |
 
 ## Which database each target uses
@@ -40,13 +40,13 @@ The Makefile loads `.env` and exports every variable in it. It strips quotes fro
 
 | Target | Database |
 |---|---|
-| `migrate-up`, `migrate-down`, `test-db`, `db-check`, `app-role`, `seed`, `backup` | `DATABASE_URL` from `.env` (Supabase owner, `sslmode=require` added if the URL has no query). Local Docker when `DATABASE_URL` is empty |
+| `migrate-up`, `migrate-down`, `db-check`, `app-role`, `seed`, `backup` | `DATABASE_URL` from `.env` (Supabase owner, `sslmode=require` added if the URL has no query). They refuse to run when `DATABASE_URL` is empty |
 | `run` | `SOCKABUS_POSTGRES_URL` from `.env` |
-| `test-e2e` | Always local Docker: it writes append-only rows that cannot be deleted |
+| `test-db`, `test-e2e` | Always the Playwright scratch DB (`make e2e-up`, `localhost:15432/sockabus_e2e`), never Supabase: `test-e2e` writes append-only rows that cannot be deleted |
 
 `db-check`, `app-role`, `seed` and `backup` need no `psql` on the host: `scripts/pg.sh` runs the PostgreSQL 17 client from Docker.
 
-`test-db` writes inside transactions that are rolled back, so nothing is kept, but it still runs on whatever database `DATABASE_URL` points at.
+`test-db` writes inside transactions that are rolled back, so nothing is kept. There is no local Docker database for the app: it always uses Supabase.
 
 Use local Docker for one run: `make migrate-up DATABASE_URL=` (a command-line value overrides `.env`; an empty shell variable does not).
 
@@ -65,21 +65,21 @@ make web        # terminal 2
 
 **Changing the schema**
 1. Add `db/migrations/00000N_<name>.up.sql` and its `.down.sql`.
-2. `make migrate-up`
+2. `make e2e-down && make e2e-up` (fresh scratch DB with the new migration), then `make test-db`
 3. Update `db/queries/*.sql` if needed, then `make sqlc`.
-4. `make test-db`
+4. `make migrate-up` (applies it to Supabase)
 
 **Before a PR**
 ```sh
-make lint && make test && make test-db
+make lint && make test && make e2e-up && make test-db
 ```
 
 ## Variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MIGRATE_DB` | `DATABASE_URL` from `.env`, else `LOCAL_DB` | Database for `migrate-*` and `test-db` |
-| `LOCAL_DB` | `postgres://buru:buru@localhost:5432/buru?sslmode=disable` | Local Docker database |
+| `MIGRATE_DB` | `DATABASE_URL` from `.env` (empty = targets refuse) | Supabase database for `migrate-*`, `db-check`, `seed`, `backup` |
+| `TEST_DB` | `postgres://buru:buru@localhost:15432/sockabus_e2e?sslmode=disable` | Playwright scratch DB for `test-db` and `test-e2e` |
 | `SQLC` | `sqlc` on `PATH`, else `$(go env GOPATH)/bin/sqlc` | sqlc binary |
 | `GOLANGCI` | `golangci-lint-v2` or `golangci-lint` on `PATH`, else `$(go env GOPATH)/bin/golangci-lint` | Linter binary |
 

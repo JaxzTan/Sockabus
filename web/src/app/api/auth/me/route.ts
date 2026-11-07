@@ -1,4 +1,4 @@
-// Who is signed in, for the sidebar. Behind the proxy gate like every /api/* route.
+// Who is signed in (the Google email from the session cookie), for the sidebar. Behind the proxy gate like every /api/* route.
 import { cookies } from "next/headers";
 import { authOff, readSession, SESSION_COOKIE } from "@/lib/auth";
 

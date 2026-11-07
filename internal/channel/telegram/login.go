@@ -60,7 +60,7 @@ func Login(ctx context.Context, cfg LoginConfig) (*tg.User, string, error) {
 	client := telegram.NewClient(cfg.AppID, cfg.AppHash, opts)
 	var self *tg.User
 	err = client.Run(ctx, func(ctx context.Context) error {
-		ta := terminalAuth{phone: phone, codeHint: codeHint, test: cfg.TestDC != 0, name: cfg.SignUpName}
+		ta := terminalAuth{phone: phone, codeHint: codeHint, test: cfg.TestDC != 0, name: cfg.SignUpName, api: client.API()}
 		if err := client.Auth().IfNecessary(ctx, auth.NewFlow(ta, auth.SendCodeOptions{})); err != nil {
 			return err
 		}
@@ -83,6 +83,7 @@ func Login(ctx context.Context, cfg LoginConfig) (*tg.User, string, error) {
 type terminalAuth struct {
 	phone, codeHint, name string
 	test                  bool
+	api                   *tg.Client // for auth.resendCode; nil in tests
 }
 
 func (a terminalAuth) Phone(context.Context) (string, error) { return a.phone, nil }
@@ -94,14 +95,79 @@ func (terminalAuth) Password(context.Context) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-func (a terminalAuth) Code(context.Context, *tg.AuthSentCode) (string, error) {
+func (a terminalAuth) Code(ctx context.Context, sent *tg.AuthSentCode) (string, error) {
 	if a.codeHint != "" {
 		fmt.Printf("Login code (test network: %s): ", a.codeHint)
-	} else {
-		fmt.Print("Login code (sent to that account's Telegram app or by SMS): ")
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		return strings.TrimSpace(line), err
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	return strings.TrimSpace(line), err
+	in := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println(DescribeSentCode(sent))
+		canResend := a.api != nil && sent.NextType != nil
+		if canResend {
+			fmt.Printf("Login code (or type \"resend\" to get it %s instead): ", describeNext(sent.NextType))
+		} else {
+			fmt.Print("Login code: ")
+		}
+		line, err := in.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if err != nil || !canResend || !strings.EqualFold(line, "resend") {
+			return line, err
+		}
+		res, err := a.api.AuthResendCode(ctx, &tg.AuthResendCodeRequest{PhoneNumber: a.phone, PhoneCodeHash: sent.PhoneCodeHash})
+		if err != nil {
+			fmt.Printf("Resend refused: %v\n", err)
+			if sent.Timeout > 0 {
+				fmt.Printf("Telegram allows a resend only after %d s; wait and try again.\n", sent.Timeout)
+			}
+			continue
+		}
+		if next, ok := res.(*tg.AuthSentCode); ok {
+			sent = next
+		}
+	}
+}
+
+// DescribeSentCode says where Telegram delivered the login code, so the operator knows where to look.
+func DescribeSentCode(sent *tg.AuthSentCode) string {
+	var where string
+	switch t := sent.Type.(type) {
+	case *tg.AuthSentCodeTypeApp:
+		where = "as a message in the Telegram app where this number is already logged in (chat from \"Telegram\", blue tick). Not SMS"
+	case *tg.AuthSentCodeTypeSMS, *tg.AuthSentCodeTypeSMSWord, *tg.AuthSentCodeTypeSMSPhrase:
+		where = "by SMS to the phone"
+	case *tg.AuthSentCodeTypeFirebaseSMS:
+		where = "by SMS through Google Firebase (Telegram expects its official app; it may never arrive for API logins)"
+	case *tg.AuthSentCodeTypeFragmentSMS:
+		where = "on fragment.com (anonymous number): open " + t.URL
+	case *tg.AuthSentCodeTypeCall:
+		where = "by a voice call that reads out the code"
+	case *tg.AuthSentCodeTypeFlashCall, *tg.AuthSentCodeTypeMissedCall:
+		where = "as a missed call: the code is the last digits of the calling number"
+	case *tg.AuthSentCodeTypeEmailCode:
+		where = "by email to " + t.EmailPattern
+	case *tg.AuthSentCodeTypeSetUpEmailRequired:
+		where = "nowhere yet: Telegram wants a login email set up first. Log in on the official Telegram app once and add a login email in Settings → Privacy and Security"
+	default:
+		where = fmt.Sprintf("by %T", t)
+	}
+	return "Telegram sent the code " + where + "."
+}
+
+func describeNext(t tg.AuthCodeTypeClass) string {
+	switch t.(type) {
+	case *tg.AuthCodeTypeSMS:
+		return "by SMS"
+	case *tg.AuthCodeTypeCall:
+		return "by voice call"
+	case *tg.AuthCodeTypeFlashCall, *tg.AuthCodeTypeMissedCall:
+		return "by missed call"
+	case *tg.AuthCodeTypeFragmentSMS:
+		return "on fragment.com"
+	default:
+		return "another way"
+	}
 }
 
 func (a terminalAuth) AcceptTermsOfService(_ context.Context, tos tg.HelpTermsOfService) error {

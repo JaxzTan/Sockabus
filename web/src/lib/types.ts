@@ -77,12 +77,23 @@ export interface Entity {
 
 export type LookupResult = "held" | "sent";
 
+export type RecommendedAction = "HOLD_FOR_REVIEW" | "WARN_CUSTOMER" | "MONITOR";
+
+// POST /v1/lookup. A miss is exactly { match: false }; a hit carries the rule-based risk fields
+// (internal/risk, web/src/lib/risk.ts) and, for the operator token only, masked chat evidence.
 export interface LookupResponse {
   match: boolean;
   confidence?: Confidence;
+  status?: string;
   scam_types?: ScamType[];
   first_seen?: string;
+  last_seen?: string;
   sightings?: number;
+  risk_score?: number;
+  reason?: string;
+  signals?: string[];
+  recommended_action?: RecommendedAction;
+  evidence?: { excerpt: string; transcript_ref: string; persona_id?: string; captured_at: string };
 }
 
 export interface Lookup {
@@ -93,6 +104,7 @@ export interface Lookup {
   acct?: string; // digits only, kept in this browser (never in the URL)
   amt: string;
   ms: number;
+  scripted?: boolean; // the bank story's lookup, answered in the browser from scripted data
 }
 
 export interface BankDraft {

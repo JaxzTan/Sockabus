@@ -78,9 +78,13 @@ SOCKABUS_API_URL=http://localhost:${API_PORT}
 SOCKABUS_WEB_URL=http://localhost:${WEB_PORT}
 SOCKABUS_OPERATOR_TOKEN=$(openssl rand -hex 24)
 SOCKABUS_MESSAGE_KEY=$(openssl rand -base64 32)
-SOCKABUS_CONSOLE_USER=e2e-operator
-SOCKABUS_CONSOLE_PASSWORD=$(openssl rand -hex 16)
+SOCKABUS_SESSION_SECRET=$(openssl rand -hex 32)
+SOCKABUS_E2E_CONSOLE_EMAIL=e2e-operator@sockabus.test
 EOF
+  fi
+  # A stack.env from before Google sign-in has no session secret: add one.
+  if ! grep -q '^SOCKABUS_SESSION_SECRET=' "$STATE/stack.env"; then
+    printf 'SOCKABUS_SESSION_SECRET=%s\nSOCKABUS_E2E_CONSOLE_EMAIL=e2e-operator@sockabus.test\n' "$(openssl rand -hex 32)" >> "$STATE/stack.env"
   fi
   # shellcheck disable=SC1091
   . "$STATE/stack.env"
@@ -161,7 +165,7 @@ EOF
       SOCKABUS_PERSONA_MODEL="$(dotenv SOCKABUS_PERSONA_MODEL)" SOCKABUS_EXTRACT_MODEL="$(dotenv SOCKABUS_EXTRACT_MODEL)" \
       SOCKABUS_TG_APP_ID="$(dotenv SOCKABUS_TG_APP_ID)" SOCKABUS_TG_APP_HASH="$(dotenv SOCKABUS_TG_APP_HASH)" \
       SOCKABUS_TG_SESSION_DIR="$STATE/telegram" SOCKABUS_PERSONA_GEN_TIMEOUT="$(dotenv SOCKABUS_PERSONA_GEN_TIMEOUT)" \
-      SOCKABUS_REPLY_DELAY_MIN=1s SOCKABUS_REPLY_READ_MIN=1s SOCKABUS_REPLY_READ_MAX=2s SOCKABUS_TYPING_CPS=200 \
+      SOCKABUS_REPLY_DELAY_MIN=1s SOCKABUS_REPLY_READ_MIN=1s SOCKABUS_REPLY_READ_MAX=2s SOCKABUS_TYPING_WPM=3000 SOCKABUS_REPLY_BUBBLE_GAP=0s \
       "$STATE/sockabus" < /dev/null > "$STATE/api.log" 2>&1 &
     echo $! > "$STATE/api.pid"
   fi
@@ -173,21 +177,25 @@ EOF
     env -i PATH="$PATH" HOME="$HOME" NEXT_TELEMETRY_DISABLED=1 \
       SOCKABUS_API_URL="http://localhost:${API_PORT}" \
       SOCKABUS_OPERATOR_TOKEN="$SOCKABUS_OPERATOR_TOKEN" \
-      SOCKABUS_CONSOLE_USER="$SOCKABUS_CONSOLE_USER" SOCKABUS_CONSOLE_PASSWORD="$SOCKABUS_CONSOLE_PASSWORD" \
+      SOCKABUS_SESSION_SECRET="$SOCKABUS_SESSION_SECRET" SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS="$SOCKABUS_E2E_CONSOLE_EMAIL" \
+      GOOGLE_CLIENT_ID=e2e-not-a-real-client.apps.googleusercontent.com GOOGLE_CLIENT_SECRET=e2e-not-a-real-secret \
       NEXT_PUBLIC_UNDO_MS=0 \
       pnpm exec next dev --port "$WEB_PORT" < /dev/null > "$STATE/web.log" 2>&1 &
     echo $! > "$STATE/web.pid"
     cd "$ROOT"
   fi
   wait_for 120 "console /sign-in" curl -fsS -o /dev/null "http://localhost:${WEB_PORT}/sign-in"
-  # Compile the pages once (signed in), so the first test doesn't pay for it.
-  local jar="$STATE/warmup.cookies"
-  curl -s -o /dev/null -c "$jar" --data-urlencode "user=$SOCKABUS_CONSOLE_USER" --data-urlencode "password=$SOCKABUS_CONSOLE_PASSWORD" \
-    "http://localhost:${WEB_PORT}/api/auth/sign-in" || true
-  for p in / /demo/chat /demo/bank /conversations /personas /verify /status /api/internal/status; do
-    curl -s -o /dev/null -b "$jar" --max-time 180 "http://localhost:${WEB_PORT}${p}" || true
+  # Compile the pages once (signed in), so the first test doesn't pay for it. Sign-in is Google only, so
+  # mint the session cookie the way playwright/helpers.ts consoleSessionCookie does.
+  local session
+  session=$(SECRET="$SOCKABUS_SESSION_SECRET" EMAIL="$SOCKABUS_E2E_CONSOLE_EMAIL" node -e '
+    const c = require("node:crypto");
+    const p = Buffer.from(process.env.EMAIL).toString("base64url") + "." + (Date.now() + 3600e3);
+    const k = c.createHash("sha256").update("sockabus-console:session:" + process.env.SECRET).digest();
+    process.stdout.write(p + "." + c.createHmac("sha256", k).update(p).digest("base64url"));')
+  for p in /home /demo/chat /demo/bank /conversations /personas /verify /status /api/internal/status; do
+    curl -s -o /dev/null -b "sockabus_session=$session" --max-time 180 "http://localhost:${WEB_PORT}${p}" || true
   done
-  rm -f "$jar"
   log "ready: API http://localhost:${API_PORT}  console http://localhost:${WEB_PORT}  (state in $STATE)"
 }
 

@@ -108,16 +108,15 @@ trail tamper-proof (NFR-8).
 | `make seed` | Loads `db/seed/001_demo.sql` (operator 1, playbooks, demo personas). Safe to rerun |
 | `make backup` | `pg_dump` of the `public` schema into `backups/`, gzipped. Optional rclone copy and Kuma push on success. A failed dump leaves only a `.part` file |
 | `make restore-test` | Restores the newest dump into a throwaway PostgreSQL container, counts rows, removes the container. Never touches Supabase |
-| `make test-e2e` | Now always uses local Docker, because it writes append-only rows that can't be deleted |
+| `make test-e2e` | Always uses the Playwright scratch DB (`make e2e-up`), because it writes append-only rows that can't be deleted |
 
 All of them run without a local `psql`: `scripts/pg.sh` runs the PostgreSQL 17 client from the
 `postgres:17-alpine` image, and passes the URL as an environment variable so it never appears in `ps`.
 
 ### Prod stack
 
-`docker-compose.prod.yml` keeps the local `postgres` container out of prod with a `local-db` profile
-(it stays in `docker-compose.yml` for development). The app no longer waits for it, and the `migrate`
-service uses `DATABASE_URL`. `make deploy` starts only Redis before migrating. Temporal is unaffected:
+There is no local `postgres` container in either compose file. The `migrate` service lives only in
+`docker-compose.prod.yml` and uses `DATABASE_URL`. `make deploy` starts only Redis before migrating. Temporal is unaffected:
 in prod it stores its history in SQLite on its own volume.
 
 ### Migration 000005
@@ -169,7 +168,7 @@ GitHub yet.
 
 1. `go vet ./... && go test -race ./...`
 2. `cd web && pnpm lint && pnpm build`
-3. `make test-db DATABASE_URL=` (local database)
+3. `make e2e-up && make test-db` (throwaway scratch DB)
 4. Playwright against a local backend started with the settings in [playwright/README.md](../playwright/README.md):
    `cd playwright && pnpm test:e2e`
 5. `docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app config --quiet`

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/JaxzTan/Buru_AI/internal/workflows"
 )
 
 type Config struct {
@@ -37,6 +39,15 @@ type Live struct {
 	PersonaModel    string
 	ExtractModel    string
 	PersonaThinking string // gemini thinking level for persona replies: low | medium | high
+	// PersonaProvider overrides LLMProvider for chat replies only (e.g. "openai" for a Malaysian
+	// model); persona generation, extraction and summaries stay on LLMProvider.
+	PersonaProvider string
+	// RAG: put replies that worked in past chats into the persona prompt (SOCKABUS_RAG, default on);
+	// the in-memory index is rebuilt every RAGRefresh (SOCKABUS_RAG_REFRESH, default 10m).
+	RAG           bool
+	RAGRefresh    time.Duration
+	OpenAIBaseURL string
+	OpenAIAPIKey  string
 
 	TelegramAppID      int
 	TelegramAppHash    string
@@ -61,8 +72,20 @@ type Live struct {
 	ReplyDelayMin     time.Duration // FR-3 floor; below 10 s only outside prod (CI and tests)
 	ReplyReadMin      time.Duration
 	ReplyReadMax      time.Duration
-	TypingCPS         float64
+	TypingWPM         float64
+	BubbleGap         time.Duration // pause before each extra bubble in one reply
 	Inactivity        time.Duration
+	// HumanTiming turns on per-persona human-like reply timing (notice/read/think/type, sleep
+	// window, brb, typos). Default: on, unless the FR-3 floor is lowered (CI and tests), where
+	// the fixed READ_MIN/MAX, TYPING_WPM and BUBBLE_GAP timing above is used instead.
+	HumanTiming bool
+	// TelegramReplies off (SOCKABUS_TG_REPLIES=0) stops every Telegram persona from replying, marking
+	// read or showing "typing…": a kill switch while a reply bug is fixed. Inbound messages are still
+	// stored and extracted; operator messages still send. Default on.
+	TelegramReplies bool
+	// PersonaTiming overrides personas.profile "timing" per persona (SOCKABUS_PERSONA_TIMING),
+	// keyed by persona id, lower-case name or "*".
+	PersonaTiming map[string]workflows.PersonaTiming
 }
 
 func Load() (Config, error) {
@@ -97,6 +120,9 @@ func Load() (Config, error) {
 		PersonaModel:       os.Getenv("SOCKABUS_PERSONA_MODEL"),
 		ExtractModel:       os.Getenv("SOCKABUS_EXTRACT_MODEL"),
 		PersonaThinking:    getenv("SOCKABUS_PERSONA_THINKING", "low"),
+		PersonaProvider:    strings.ToLower(os.Getenv("SOCKABUS_PERSONA_PROVIDER")),
+		OpenAIBaseURL:      os.Getenv("SOCKABUS_OPENAI_BASE_URL"),
+		OpenAIAPIKey:       os.Getenv("SOCKABUS_OPENAI_API_KEY"),
 		TelegramAppHash:    os.Getenv("SOCKABUS_TG_APP_HASH"),
 		TelegramSessionDir: getenv("SOCKABUS_TG_SESSION_DIR", ".secrets/telegram"),
 		TelegramDevice:     os.Getenv("SOCKABUS_TG_DEVICE_MODEL"),
@@ -158,6 +184,19 @@ func Load() (Config, error) {
 	if l.Inactivity, err = durEnv("SOCKABUS_INACTIVITY", 72*time.Hour); err != nil {
 		return c, err
 	}
+	switch strings.ToLower(strings.TrimSpace(getenv("SOCKABUS_RAG", "1"))) {
+	case "1", "true", "on":
+		l.RAG = true
+	case "0", "false", "off":
+	default:
+		return c, fmt.Errorf("SOCKABUS_RAG must be 1 or 0")
+	}
+	if l.RAGRefresh, err = durEnv("SOCKABUS_RAG_REFRESH", 10*time.Minute); err != nil {
+		return c, err
+	}
+	if l.RAGRefresh < time.Minute {
+		return c, fmt.Errorf("SOCKABUS_RAG_REFRESH must be at least 1m")
+	}
 	if l.LLMTimeout, err = durEnv("SOCKABUS_LLM_TIMEOUT", 45*time.Second); err != nil {
 		return c, err
 	}
@@ -167,8 +206,49 @@ func Load() (Config, error) {
 	if l.PersonaGenTimeout, err = durEnv("SOCKABUS_PERSONA_GEN_TIMEOUT", 90*time.Second); err != nil {
 		return c, err
 	}
-	if l.TypingCPS, err = floatEnv("SOCKABUS_TYPING_CPS", 3.5); err != nil {
+	if l.TypingWPM, err = floatEnv("SOCKABUS_TYPING_WPM", 30); err != nil {
 		return c, err
+	}
+	if l.BubbleGap, err = durEnv("SOCKABUS_REPLY_BUBBLE_GAP", 10*time.Second); err != nil {
+		return c, err
+	}
+	if l.BubbleGap <= 0 {
+		l.BubbleGap = time.Millisecond // "0" means no gap; a zero Timing.BubbleGap would mean the 10 s default
+	}
+	// BOT_STATUS picks the reply mode and wins over SOCKABUS_HUMAN_TIMING:
+	// 1 = simulate a real person (human-like timing), 2 = quick replies for testing (fixed
+	// READ_MIN/MAX, TYPING_WPM, BUBBLE_GAP timing; the FR-3 floor still applies).
+	humanTiming := os.Getenv("SOCKABUS_HUMAN_TIMING")
+	switch strings.TrimSpace(os.Getenv("BOT_STATUS")) {
+	case "1":
+		humanTiming = "1"
+	case "2":
+		humanTiming = "0"
+	case "":
+	default:
+		return c, fmt.Errorf("BOT_STATUS must be 1 (real person) or 2 (quick testing)")
+	}
+	switch strings.ToLower(humanTiming) {
+	case "1", "true", "on":
+		l.HumanTiming = true
+	case "0", "false", "off":
+		l.HumanTiming = false
+	case "":
+		l.HumanTiming = l.ReplyDelayMin >= 10*time.Second
+	default:
+		return c, fmt.Errorf("SOCKABUS_HUMAN_TIMING must be 1 or 0")
+	}
+
+	switch strings.ToLower(os.Getenv("SOCKABUS_TG_REPLIES")) {
+	case "", "1", "true", "on":
+		l.TelegramReplies = true
+	case "0", "false", "off":
+		l.TelegramReplies = false
+	default:
+		return c, fmt.Errorf("SOCKABUS_TG_REPLIES must be 1 or 0")
+	}
+	if l.PersonaTiming, err = workflows.ParseTimingOverrides(os.Getenv("SOCKABUS_PERSONA_TIMING")); err != nil {
+		return c, fmt.Errorf("SOCKABUS_PERSONA_TIMING: %w", err)
 	}
 
 	if len(l.OperatorToken) < 24 {

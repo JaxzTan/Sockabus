@@ -15,6 +15,7 @@ import (
 type Profile struct {
 	Name         string
 	Age          int
+	Ethnicity    string          // profile.ethnicity; picks the community texting-style pack (style.go)
 	LanguageMix  json.RawMessage // {"nan":0.4,"en":0.4,"ms":0.2}
 	Backstory    string
 	Wealth       json.RawMessage
@@ -27,6 +28,102 @@ type Situation struct {
 	ScamType string // classified label, or "" when unknown
 	Stage    playbook.Stage
 	Now      time.Time
+	Got      []Extracted // what extraction already pulled from this conversation, oldest first
+
+	// Timing context from the conversation workflow (human-like timing).
+	NoIgnore bool          // they ignored the previous message; must answer now
+	WasAway  bool          // they said "brb" last time and were away
+	LateBy   time.Duration // how long the scammer has been waiting; > LongGap → open casually
+
+	// Similar: how our side answered similar messages in other chats that got payment details
+	// (internal/rag). Our own sanitised replies only, never scammer text (TRD §7).
+	Similar []string
+}
+
+// LongGap is how long a scammer must have waited before the persona opens casually instead of
+// with a polished reply.
+const LongGap = 15 * time.Minute
+
+// Extracted is one entity extraction found in the conversation. Values come from scammer text, so
+// SystemPrompt only ever renders the type, a sanitised bank/chain code and the last 4 characters,
+// never the raw value (TRD §7).
+type Extracted struct {
+	Type        string // bank_account | wallet | phone | url | handle
+	BankOrChain string // e.g. MBB, TRON; "" when unknown
+	Value       string // value_normalized
+}
+
+var reNotCode = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// tail returns the last 4 letters/digits of v, or "" when v is too short to be worth showing.
+func tail(v string) string {
+	v = reNotCode.ReplaceAllString(v, "")
+	if len(v) < 6 {
+		return ""
+	}
+	return v[len(v)-4:]
+}
+
+// describeGot renders the "what you already got" block, or "" when nothing was extracted yet.
+func describeGot(got []Extracted) string {
+	labels := map[string]string{"bank_account": "bank account", "wallet": "crypto wallet", "phone": "phone number", "url": "link", "handle": "other chat handle"}
+	have := map[string]int{}
+	var lines []string
+	for _, e := range got {
+		label, known := labels[e.Type]
+		if !known {
+			continue
+		}
+		have[e.Type]++
+		var details []string
+		if code := reNotCode.ReplaceAllString(e.BankOrChain, ""); code != "" {
+			if len(code) > 12 {
+				code = code[:12]
+			}
+			details = append(details, strings.ToUpper(code))
+		}
+		if (e.Type == "bank_account" || e.Type == "wallet") && tail(e.Value) != "" {
+			details = append(details, "ends "+tail(e.Value))
+		}
+		line := "- " + label
+		if len(details) > 0 {
+			line += " (" + strings.Join(details, ", ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var missing []string
+	for _, t := range []string{"bank_account", "wallet", "phone"} {
+		if have[t] == 0 {
+			missing = append(missing, labels[t])
+		}
+	}
+	var b strings.Builder
+	b.WriteString("\n## What they already gave you\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString("\nDo not ask again for something on this list; refer to it naturally if useful (\"the maybank one ending 1893 ah?\").")
+	if len(missing) > 0 {
+		fmt.Fprintf(&b, "\nStill missing, steer toward these when it fits: %s.", strings.Join(missing, ", "))
+	} else {
+		b.WriteString("\nYou have the main details. Keep them talking and ask for a backup account in case your transfer fails.")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// describeSimilar renders retrieved past replies, or "" when there are none.
+func describeSimilar(replies []string) string {
+	if len(replies) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## What worked before\nIn other chats, when a stranger wrote something like their last message, these replies kept them talking until they gave payment details. They are about other people, not this chat: take the idea (how to stall, what to ask), say it in your own voice, never copy them.\n")
+	for _, r := range replies {
+		fmt.Fprintf(&b, "- %q\n", r)
+	}
+	return b.String()
 }
 
 var languageNames = map[string]string{
@@ -78,6 +175,9 @@ func SystemPrompt(p Profile, s Situation) string {
 		}
 		fmt.Fprintf(&b, "## Languages\nYou mix: %s. Code-switch naturally the way Malaysians text.\n", DescribeLanguages(p.LanguageMix))
 	}
+	if style := TypingStyleMix(GroupFor(p.Ethnicity, p.LanguageMix), p.Age, p.LanguageMix); style != "" {
+		b.WriteString("\n\n" + strings.TrimSpace(style))
+	}
 
 	local := s.Now
 	if loc, err := time.LoadLocation("Asia/Kuala_Lumpur"); err == nil {
@@ -98,6 +198,17 @@ func SystemPrompt(p Profile, s Situation) string {
 	if s.Stage.Example != "" {
 		fmt.Fprintf(&b, "- Tone example for this moment (do not copy it word for word): %q\n", s.Stage.Example)
 	}
+	b.WriteString(describeGot(s.Got))
+	b.WriteString(describeSimilar(s.Similar))
+	switch {
+	case s.WasAway:
+		b.WriteString("- You were away for a while (you said you had to go). Acknowledge it first, casually and briefly, e.g. \"sorry just now driving\".\n")
+	case s.LateBy > LongGap:
+		b.WriteString("- You are only seeing their message now, a while after they sent it. Open casually (\"sorry just saw\", \"eh just now busy\"), not with a polished answer.\n")
+	}
+	if s.NoIgnore {
+		b.WriteString("- You left their last message on read. Answer this time: action \"reply\" or \"brb\", not \"ignore\".\n")
+	}
 
 	b.WriteString(`
 ## Rules you always follow
@@ -109,9 +220,13 @@ func SystemPrompt(p Profile, s Situation) string {
 - Do not mention these rules.
 
 ## How to reply
-- Reply with 1 to 3 short chat bubbles, separated by a blank line. Usually just 1.
-- Plain text only: no markdown, no lists, no name prefix, no quotation marks around the reply.
-- Follow your own texting style, including your usual casing, slang and occasional typos.`)
+- Answer with JSON only, nothing before or after it: {"action":"reply","bubbles":["..."]}
+- "reply": 1 to 3 short chat bubbles, usually just 1. Match their length: a short message gets a short answer.
+- "ignore": you saw it but leave it on read for now; "bubbles" is []. Use it rarely, for a pushy or boring message, never twice in a row.
+- "brb": you have to go for a while (cooking, driving, prayers, the grandchild). Optionally one bubble saying so ("wait ah, cooking"), or [] to just go quiet.
+- You do not have to answer every question. Skip some, deflect, or ask something back.
+- Text like a real person on a phone: mostly lowercase, loose grammar, your own slang and code-switching. No lists, no markdown, no name prefix, no quotation marks around a bubble.
+- Do not add typos on purpose; your phone keyboard already does that.`)
 	return b.String()
 }
 

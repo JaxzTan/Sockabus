@@ -1046,6 +1046,7 @@ type Conversation struct {
 	ScammerPeerRefCiphertext []byte             `json:"-"`
 	ScammerPeerRefBidx       []byte             `json:"-"`
 	IdentifiersDekRef        pgtype.Text        `json:"-"`
+	ArchivedAt               *time.Time         `json:"archived_at"`
 }
 
 type ConversationStageEvent struct {

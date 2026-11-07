@@ -1,20 +1,7 @@
-# Local environment (docs/TRD.md §8): PostgreSQL, Redis, Temporal dev server, Sockabus app + dashboard.
-# `make up` starts dependencies only; `docker compose --profile app up` also runs the Go app and the web dashboard.
+# Local environment (docs/TRD.md §8): Redis, Temporal dev server, Sockabus app + dashboard.
+# The app's database is Supabase: SOCKABUS_POSTGRES_URL from .env (session pooler, port 5432, sslmode=require).
+# `make up` starts Redis + Temporal only; `docker compose --profile app up` also runs the Go app and the web dashboard.
 services:
-  postgres:
-    container_name: postgres
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: buru
-      POSTGRES_USER: buru
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-buru} # set in .env on the server (openssl rand -hex 24)
-    ports: ["5432:5432"]
-    volumes: [postgres-data:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "buru", "-d", "buru"]
-      interval: 5s
-      retries: 20
-
   redis:
     container_name: redis
     image: redis:7.4-alpine
@@ -45,8 +32,8 @@ services:
     # Session files from make tglogin (same mount as docker-compose.prod.yml).
     volumes: [./.secrets/telegram:/secrets/telegram]
     ports: ["8080:8080"]
+    # No postgres dependency: the app connects to Supabase via SOCKABUS_POSTGRES_URL in .env.
     depends_on:
-      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       temporal: { condition: service_started }
 
@@ -59,8 +46,13 @@ services:
         SOCKABUS_API_URL: http://app:8080 # browser calls /api/*, Next proxies to the app container
     environment:
       SOCKABUS_OPERATOR_TOKEN: ${SOCKABUS_OPERATOR_TOKEN:-} # added by the /api proxy, never sent to the browser
-      SOCKABUS_CONSOLE_USER: ${SOCKABUS_CONSOLE_USER:-} # console sign-in, checked on the Next server
-      SOCKABUS_CONSOLE_PASSWORD: ${SOCKABUS_CONSOLE_PASSWORD:-}
+      # Console sign-in with Google, done on the Next server (web/src/lib/auth.ts, web/src/lib/google.ts)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      SOCKABUS_SESSION_SECRET: ${SOCKABUS_SESSION_SECRET:-}
+      SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS: ${SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS:-}
+      SOCKABUS_CONSOLE_GOOGLE_ALLOWED_DOMAIN: ${SOCKABUS_CONSOLE_GOOGLE_ALLOWED_DOMAIN:-}
       SOCKABUS_CONSOLE_AUTH: ${SOCKABUS_CONSOLE_AUTH:-}
       # /automate reads Playwright results from disk (web/src/lib/e2e-results.ts); the report and
       # screenshots are found one level up from it (/e2e/playwright-report, /e2e/test-results).
@@ -71,15 +63,3 @@ services:
       - ./playwright/test-results:/e2e/test-results:ro
     ports: ["3000:3000"]
     depends_on: [app]
-
-  # One-off: docker compose run --rm migrate (make deploy runs it before restarting the app).
-  migrate:
-    profiles: [tools]
-    image: migrate/migrate:v4.19.1
-    volumes: [./db/migrations:/migrations:ro]
-    command: ["-path", "/migrations", "-database", "postgres://buru:${POSTGRES_PASSWORD:-buru}@postgres:5432/buru?sslmode=disable", "up"]
-    depends_on:
-      postgres: { condition: service_healthy }
-
-volumes:
-  postgres-data:

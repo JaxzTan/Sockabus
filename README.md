@@ -91,7 +91,7 @@ Copy `.env.example` to `.env` at the repo root. Key variables:
 
 ### Run
 ```bash
-make up            # PostgreSQL :5432, Redis :6379, Temporal :7233 (UI :8233)
+make up            # Redis :6379, Temporal :7233 (UI :8233); DB = Supabase (SOCKABUS_POSTGRES_URL)
 make migrate-up
 make run           # API on :8080 (SOCKABUS_MODE=demo: in-memory pitch data)
 curl localhost:8080/readyz
@@ -128,8 +128,8 @@ docker compose exec temporal temporal workflow execute \
 | `make run` | Run the API + Temporal worker |
 | `make web` | Run the dashboard |
 | `make test` | `go test -race ./...` |
-| `make test-db` | DB integration tests (needs `make up migrate-up`) |
-| `make test-e2e` | End-to-end honeypot loop on local PostgreSQL + Temporal (never Supabase) |
+| `make test-db` | DB integration tests on the Playwright scratch DB (needs `make e2e-up`) |
+| `make test-e2e` | End-to-end honeypot loop on the Playwright scratch DB + Temporal (needs `make e2e-up`; never Supabase) |
 | `make lint` | `go vet` + golangci-lint |
 | `make arch` | Open the architecture diagram in the browser |
 | `make deploy` | On the VPS: pull `main`, migrate Supabase, rebuild and restart the prod stack |
@@ -141,7 +141,7 @@ Database scripts run a pinned `postgres:17-alpine` client through Docker (`scrip
 
 ```bash
 make test                     # Go unit tests
-make up migrate-up && make test-db test-e2e   # DB + Temporal integration (local Docker only)
+make e2e-up && make test-db test-e2e   # DB + Temporal integration on the throwaway scratch DB (never Supabase)
 make -C playwright install    # once: Playwright deps + Chromium (self-contained in playwright/)
 make e2e-up && make e2e && make e2e-down   # throwaway stack, full suite, teardown
 # or against your own backend:
