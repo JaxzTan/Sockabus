@@ -147,6 +147,57 @@ test("h. bank story: flagged before anyone pays, held with evidence, a person de
   });
 });
 
+test("i. customer view: another bank's customer sees sent, then a warning, then blocked after review", async ({ page }) => {
+  const transferStoryAccount = async () => {
+    await page.goto("/demo/customer");
+    await page.getByTestId("cust-fill-story").click();
+    await page.getByTestId("cust-transfer").click();
+  };
+
+  await test.step("before Sockabus flags it: the transfer goes through", async () => {
+    await signIn(page, "/demo/bank");
+    await page.getByTestId("story-reset").click();
+    await transferStoryAccount();
+    await expect(page.getByTestId("cust-sent")).toContainText("Transfer successful");
+  });
+
+  await test.step("flagged, review not finished: a warning, and the customer decides", async () => {
+    await page.goto("/demo/bank");
+    await page.getByTestId("story-play").click();
+    await transferStoryAccount();
+    const warn = page.getByTestId("cust-warn");
+    await expect(warn).toContainText("Warning: possible scam");
+    await expect(warn).toContainText("DemoBank 0000xxxx");
+    await page.getByTestId("cust-cancel").click();
+    await expect(page.getByTestId("cust-transfer")).toBeVisible();
+  });
+
+  await test.step("the receiving bank confirms the hold: the account is blocked", async () => {
+    await page.goto("/demo/bank");
+    await page.getByTestId("story-fill").click();
+    await page.getByTestId("transfer-btn").click();
+    await page.getByTestId("queue-item").filter({ hasText: "story" }).first().getByTestId("hold-confirm").click();
+    await transferStoryAccount();
+    await expect(page.getByTestId("cust-blocked")).toContainText("Account blocked");
+    await expect(page.getByTestId("cust-blocked")).toContainText("has not left your account");
+    expect(await page.locator("main").innerText()).not.toMatch(/\d{6,}/);
+  });
+
+  await test.step("quick fill: the fixed demo accounts always show a warning and a block", async () => {
+    await page.goto("/demo/customer");
+    await page.getByTestId("cust-fill-warn").click();
+    await page.getByTestId("cust-transfer").click();
+    await expect(page.getByTestId("cust-warn")).toContainText("DemoBank 0000xxxx");
+    await page.getByTestId("cust-proceed").click();
+    await expect(page.getByTestId("cust-sent")).toContainText("You continued after a scam warning");
+    await page.getByRole("button", { name: "New transfer" }).click();
+    await page.getByTestId("cust-fill-blocked").click();
+    await page.getByTestId("cust-transfer").click();
+    await expect(page.getByTestId("cust-blocked")).toContainText("Account blocked");
+    await expect(page.getByTestId("cust-blocked")).toContainText("a job scam");
+  });
+});
+
 test("f. web chat and conversations: messages appear in the console by polling", async ({ page, context }) => {
   const scammerText = `Part time job RM300 a day. Pay RM50 deposit to Maybank ${group4(freshAccountNumber())} first`;
   const account = scammerText.match(/\d{4} \d{4} \d{4}/)![0];

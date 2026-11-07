@@ -2,23 +2,6 @@
 # The app's database is Supabase: SOCKABUS_POSTGRES_URL from .env (session pooler, port 5432, sslmode=require).
 # `make up` starts Redis + Temporal only; `docker compose --profile app up` also runs the Go app and the web dashboard.
 services:
-  # Throwaway local database for tests only (make test-e2e / test-db, CI). Never the app's runtime DB.
-  # Start it with `make local-db` or `docker compose --profile local-db up -d --wait postgres`.
-  postgres:
-    container_name: postgres
-    profiles: [local-db, tools] # tools: the local `migrate` one-off below needs it
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: buru
-      POSTGRES_USER: buru
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-buru} # set in .env on the server (openssl rand -hex 24)
-    ports: ["5432:5432"]
-    volumes: [postgres-data:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "buru", "-d", "buru"]
-      interval: 5s
-      retries: 20
-
   redis:
     container_name: redis
     image: redis:7.4-alpine
@@ -80,17 +63,3 @@ services:
       - ./playwright/test-results:/e2e/test-results:ro
     ports: ["3000:3000"]
     depends_on: [app]
-
-  # One-off, LOCAL test database only: docker compose --profile tools run --rm migrate (make test-e2e runs it).
-  # Never auto-run by make up/all. Supabase migrations go through docker-compose.prod.yml (make deploy),
-  # which overrides this command with DATABASE_URL, or `make migrate-up`.
-  migrate:
-    profiles: [tools]
-    image: migrate/migrate:v4.19.1
-    volumes: [./db/migrations:/migrations:ro]
-    command: ["-path", "/migrations", "-database", "postgres://buru:${POSTGRES_PASSWORD:-buru}@postgres:5432/buru?sslmode=disable", "up"]
-    depends_on:
-      postgres: { condition: service_healthy }
-
-volumes:
-  postgres-data:

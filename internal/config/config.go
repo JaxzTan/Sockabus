@@ -190,7 +190,20 @@ func Load() (Config, error) {
 	if l.BubbleGap <= 0 {
 		l.BubbleGap = time.Millisecond // "0" means no gap; a zero Timing.BubbleGap would mean the 10 s default
 	}
-	switch strings.ToLower(os.Getenv("SOCKABUS_HUMAN_TIMING")) {
+	// BOT_STATUS picks the reply mode and wins over SOCKABUS_HUMAN_TIMING:
+	// 1 = simulate a real person (human-like timing), 2 = quick replies for testing (fixed
+	// READ_MIN/MAX, TYPING_WPM, BUBBLE_GAP timing; the FR-3 floor still applies).
+	humanTiming := os.Getenv("SOCKABUS_HUMAN_TIMING")
+	switch strings.TrimSpace(os.Getenv("BOT_STATUS")) {
+	case "1":
+		humanTiming = "1"
+	case "2":
+		humanTiming = "0"
+	case "":
+	default:
+		return c, fmt.Errorf("BOT_STATUS must be 1 (real person) or 2 (quick testing)")
+	}
+	switch strings.ToLower(humanTiming) {
 	case "1", "true", "on":
 		l.HumanTiming = true
 	case "0", "false", "off":

@@ -49,4 +49,34 @@ export function storyResponse(flaggedAt: number): LookupResponse {
   };
 }
 
+// Two more fake DemoBank accounts with a fixed outcome, for the customer view's quick fill: one
+// flagged and still under review (warning), one the bank already finished reviewing (blocked).
+export const DEMO_WARN_ACCOUNT = "000011112222";
+export const DEMO_BLOCKED_ACCOUNT = "000033334444";
+
+// Scripted outcome for those two accounts, or null for any other account.
+export function fixedDemoOutcome(bank: string, acctDigits: string): { kind: "warn" | "blocked"; res: LookupResponse } | null {
+  if (bank !== STORY_BANK) return null;
+  const kind = acctDigits === DEMO_WARN_ACCOUNT ? "warn" : acctDigits === DEMO_BLOCKED_ACCOUNT ? "blocked" : null;
+  if (!kind) return null;
+  // Warning: flagged 12 minutes ago, unverified. Blocked: flagged 2 days ago, verified and reviewed.
+  const ago = kind === "warn" ? 12 * 60_000 : 2 * 24 * 3600_000;
+  const first = new Date(Date.now() - ago).toISOString();
+  const verified = kind === "blocked";
+  const sightings = verified ? 4 : 1;
+  return {
+    kind,
+    res: {
+      match: true,
+      confidence: verified ? "high" : "medium",
+      status: verified ? "verified" : "unverified",
+      scam_types: [verified ? "job" : "investment"],
+      first_seen: first,
+      last_seen: first,
+      sightings,
+      ...assess("bank_account", verified ? "verified" : "unverified", verified ? "high" : "medium", sightings),
+    },
+  };
+}
+
 export const isStoryAccount = (bank: string, acctDigits: string) => bank === STORY_BANK && acctDigits === STORY_ACCOUNT;

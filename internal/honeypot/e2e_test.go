@@ -3,10 +3,10 @@ package honeypot
 // End-to-end test of the live honeypot loop against real PostgreSQL and a real Temporal server,
 // with a fake channel sender and a fake LLM:
 //
-//	SOCKABUS_TEST_POSTGRES_URL=postgres://buru:buru@localhost:5432/buru?sslmode=disable \
+//	SOCKABUS_TEST_POSTGRES_URL=postgres://buru:buru@localhost:15432/sockabus_e2e?sslmode=disable \
 //	SOCKABUS_TEST_TEMPORAL=localhost:7233 go test ./internal/honeypot -run TestE2E -v
 //
-// Migrations must be applied (make migrate-up). Skipped when the env vars are not set.
+// Start the scratch DB first (make e2e-up: migrated + seeded). Skipped when the env vars are not set.
 
 import (
 	"bytes"

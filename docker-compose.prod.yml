@@ -4,10 +4,6 @@
 # The database is Supabase: the app uses SOCKABUS_POSTGRES_URL (buru_api) and migrations use DATABASE_URL (owner),
 # both from .env, both on the session-mode pooler (port 5432).
 services:
-  # Local-development container from docker-compose.yml; this profile keeps it out of the prod stack.
-  postgres:
-    profiles: [local-db]
-
   redis:
     restart: unless-stopped
     ports: !reset []
@@ -57,9 +53,12 @@ services:
     ports: ["127.0.0.1:3001:3001"]
     volumes: [uptime-kuma-data:/app/data]
 
+  # One-off Supabase migration run by make deploy ($(PROD) run --rm migrate); the tools profile keeps it out of `up`.
   migrate:
-    command: !override ["-path", "/migrations", "-database", "${DATABASE_URL:?set DATABASE_URL in .env: Supabase owner, session pooler port 5432, ?sslmode=require}", "up"]
-    depends_on: !reset {}
+    profiles: [tools]
+    image: migrate/migrate:v4.19.1
+    volumes: [./db/migrations:/migrations:ro]
+    command: ["-path", "/migrations", "-database", "${DATABASE_URL:?set DATABASE_URL in .env: Supabase owner, session pooler port 5432, ?sslmode=require}", "up"]
 
 volumes:
   temporal-data:

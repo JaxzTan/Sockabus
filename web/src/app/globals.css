@@ -287,6 +287,25 @@ tr.hl-green td { background: var(--green-soft); }
 .bs-msg.hit { outline: 2px solid var(--red); }
 .bs-flag { margin: 0; padding: 8px 12px; border-radius: 10px; background: var(--red-soft); font-size: 15px; }
 .pubcheck p { margin: 0; font-size: 15px; }
+/* customer view: another bank's app (mock) */
+.cust-wrap { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 24px; align-items: start; }
+.cust { overflow: hidden; }
+.cust-h { background: #1F4E79; color: #fff; padding: 16px 20px; display: flex; align-items: center; gap: 10px; }
+.cust-h .sq { width: 28px; height: 28px; border-radius: 8px; background: #fff; color: #1F4E79; display: grid; place-items: center; font: 700 13px/1 var(--f-ui); }
+.cust-h b { font-size: 18px; }
+.cust-form { padding: 20px; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+.cust-err { margin: 0; color: var(--red); font-size: 15px; }
+.cust-res { padding: 28px 20px; display: grid; gap: 12px; justify-items: center; text-align: center; grid-template-columns: minmax(0, 1fr); }
+.cust-res .ic { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; font: 700 26px/1 var(--f-ui); color: #fff; }
+.cust-res h2 { font: 400 30px/34px var(--f-display); }
+.cust-res p { margin: 0; overflow-wrap: anywhere; }
+.cust-res .row-gap { justify-content: center; }
+.cust-res.blocked { background: var(--red-soft); } .cust-res.blocked .ic { background: var(--red); } .cust-res.blocked h2 { color: var(--red); }
+.cust-res.warn { background: var(--mustard-soft); } .cust-res.warn .ic { background: var(--mustard); color: var(--ink); }
+.cust-res.sent { background: var(--green-soft); } .cust-res.sent .ic { background: var(--green); } .cust-res.sent h2 { color: var(--green); }
+.cust-note { display: grid; gap: 10px; align-content: start; }
+.cust-note ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.cust-note p { margin: 0; font-size: 15px; }
 /* DemoBank fraud console (mock) */
 .fconsole { padding: 18px 20px; display: grid; gap: 16px; }
 .fc-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -492,7 +511,7 @@ tr.au-detail td { border-top: 0; background: var(--paper); padding-top: 4px; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
-  .split, .split-v, .bankgrid, .wc, .lower, .ov-2, .ov-main, .ov-grid, .bs-body { grid-template-columns: minmax(0,1fr); }
+  .split, .split-v, .bankgrid, .wc, .lower, .ov-2, .ov-main, .ov-grid, .bs-body, .cust-wrap { grid-template-columns: minmax(0,1fr); }
   .bs-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {

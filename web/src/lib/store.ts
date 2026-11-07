@@ -26,7 +26,7 @@ import {
   type ApiPersona,
 } from "./api";
 import { clock, digits, groupAcct, maskDigits, showVal, today, typeLabel } from "./format";
-import { flagStoryAccount, getBankDemo, recordHeld, resetBankDemo } from "./bankDemo";
+import { acctKey, flagStoryAccount, getBankDemo, recordHeld, resetBankDemo } from "./bankDemo";
 import { isStoryAccount, STORY_BANK, storyResponse } from "./bankStory";
 import { GENERATED, SEED_CONVOS, SEED_ENTITIES, SEED_PERSONAS } from "./seed";
 import { classify, extract, lookup, personaReply } from "./sim";
@@ -687,6 +687,7 @@ function noteHeld() {
   recordHeld({
     bank: L.bank,
     acctMasked: maskDigits(L.acct ?? ""),
+    key: acctKey(L.bank, L.acct ?? ""),
     amt,
     score: L.res.risk_score ?? 0,
     action: L.res.recommended_action ?? "HOLD_FOR_REVIEW",

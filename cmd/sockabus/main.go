@@ -158,6 +158,11 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 	honeypot.SetPersonaLLMTimeout(l.LLMTimeout)
 	senders := gateway.NewRegistry()
 	timing := workflows.Timing{MinDelay: l.ReplyDelayMin, ReadMin: l.ReplyReadMin, ReadMax: l.ReplyReadMax, WordsPerMinute: l.TypingWPM, BubbleGap: l.BubbleGap, Inactivity: l.Inactivity, HumanLike: l.HumanTiming}
+	if timing.HumanLike {
+		log.Info("reply mode: real person (BOT_STATUS=1): human-like per-persona timing")
+	} else {
+		log.Info("reply mode: quick testing (BOT_STATUS=2): fixed timing", "read_min", timing.ReadMin, "read_max", timing.ReadMax, "wpm", timing.WordsPerMinute)
+	}
 	if timing.MinDelay < workflows.MinReplyDelay {
 		log.Warn("SOCKABUS_REPLY_DELAY_MIN lowers the FR-3 reply floor below 10s: use only in CI and tests", "floor", timing.MinDelay)
 	}

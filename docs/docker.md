@@ -18,10 +18,9 @@ Docker runs the local development stack and, for v1.0, the production stack on o
 
 | Container | Image | Ports | Starts with | Notes |
 |---|---|---|---|---|
-| `postgres` | `postgres:16-alpine` | 5432 | `make up` | User and DB are `buru`; password is `POSTGRES_PASSWORD`, default `buru`. Data persists in the `postgres-data` volume |
 | `redis` | `redis:7.4-alpine` | 6379 | `make up` | Lookup cache and rate limits (TR-10, TR-13) |
 | `temporal` | `temporalio/temporal:1.5.1` | 7233 (gRPC), 8233 (web UI) | `make up` | Dev server; workflow history is in memory and resets on restart |
-| `app` | built from `Dockerfile` | 8080 | `--profile app` | Go API. Uses the local `postgres` container, not Supabase |
+| `app` | built from `Dockerfile` | 8080 | `--profile app` | Go API. Uses Supabase (`SOCKABUS_POSTGRES_URL`); there is no local database container |
 | `web` | built from `web/Dockerfile` | 3000 | `--profile app` | Next.js dashboard. Proxies `/api/*` to `http://app:8080` |
 | `migrate` | `migrate/migrate:v4.19.1` | none | `docker compose run --rm migrate` | Applies `db/migrations` to the `postgres` container |
 
@@ -57,7 +56,7 @@ All containers use `restart: unless-stopped`, so they come back after a crash or
 **First-time server setup**
 1. Install Docker and Git; open only ports 22, 80 and 443.
 2. `git clone` the repo to `/opt/buru`.
-3. `cp .env.example .env`, then set `SOCKABUS_MODE=live`, `SOCKABUS_DOMAIN`, `POSTGRES_PASSWORD` (`openssl rand -hex 24`), `make keys` values, the LLM key and the Telegram values.
+3. `cp .env.example .env`, then set `SOCKABUS_MODE=live`, `SOCKABUS_DOMAIN`, `DATABASE_URL` and `SOCKABUS_POSTGRES_URL` (Supabase session pooler), `make keys` values, the LLM key and the Telegram values.
 4. Copy `.secrets/telegram/` from your laptop, then `sudo chown -R 65532:65532 .secrets/telegram` (the app image runs as uid 65532).
 5. Point the domain's DNS A record at the server.
 6. `make deploy`, then `make seed` once.

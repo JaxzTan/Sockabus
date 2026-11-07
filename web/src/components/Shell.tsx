@@ -18,6 +18,7 @@ const OPERATE = [
 ];
 const DEMO = [
   { href: "/demo/bank", label: "Bank simulator", id: "bank" },
+  { href: "/demo/customer", label: "Customer view", id: "customer" },
   ...(DEV_CHAT ? [{ href: "/demo/chat", label: "Web chat", id: "webchat" }] : []),
 ];
 

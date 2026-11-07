@@ -12,6 +12,7 @@ export interface FlaggedTransfer {
   at: number;
   bank: string; // recipient bank code
   acctMasked: string; // never the full number
+  key?: string; // acctKey(bank, digits): matches the account without storing its number
   amt: number;
   score: number;
   action: RecommendedAction;
@@ -81,6 +82,17 @@ export function recordHeld(t: Omit<FlaggedTransfer, "id" | "at" | "decision" | "
 
 export const decideHold = (id: string, decision: HoldDecision) => update((s) => ({ ...s, transfers: s.transfers.map((t) => (t.id === id ? { ...t, decision } : t)) }));
 export const reviewMule = (id: string, mule: MuleReview) => update((s) => ({ ...s, transfers: s.transfers.map((t) => (t.id === id ? { ...t, mule } : t)) }));
+
+// A one-way key for "same bank + account" (FNV-1a), so the customer page can find this account's
+// review outcome without the number being kept in the browser.
+export function acctKey(bank: string, acctDigits: string) {
+  let h = 0x811c9dc5;
+  for (const c of `${bank}:${acctDigits}`) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0;
+  return h.toString(16);
+}
+
+// The bank finished its review (the story's last stage): the hold was confirmed or a freeze requested.
+export const isBlocked = (s: BankDemo, key: string) => s.transfers.some((t) => t.key === key && (t.decision === "confirmed" || t.mule === "freeze_requested"));
 
 // Money kept from scammers: holds a reviewer confirmed.
 export const prevented = (s: BankDemo) => s.transfers.filter((t) => t.decision === "confirmed").reduce((n, t) => n + t.amt, 0);
