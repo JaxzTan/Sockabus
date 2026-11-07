@@ -364,10 +364,10 @@ func (a *liveAPI) lookup(w http.ResponseWriter, r *http.Request) {
 		badJSON(w, err)
 		return
 	}
-	res, err := a.svc.Lookup(r.Context(), req)
 	// Evidence (a masked chat excerpt) only for the operator token, i.e. the console's bank simulator.
 	_, isCustomer := r.Context().Value(apiKeyCtx).(db.ApiKey)
 	req.WithEvidence = !isCustomer
+	res, err := a.svc.Lookup(r.Context(), req)
 	if err != nil {
 		fail(w, r, err)
 		return

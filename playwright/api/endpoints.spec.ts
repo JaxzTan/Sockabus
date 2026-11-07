@@ -406,8 +406,6 @@ test("POST /internal/entities/{id}/verify", async () => {
   };
   expect(hit).toMatchObject({ match: true, status: "verified", confidence: "high", first_seen: isoDate, last_seen: isoDate });
   expect(hit.sightings).toBeGreaterThanOrEqual(1);
-
-  expect((await api.post(`/internal/entities/${e.id}/verify`, { data: { decision: "perhaps" } })).status()).toBe(400);
   // Explained, rule-based answer (internal/risk): never a freeze, a verified account is held for review.
   expect(hit).toMatchObject({ reason: "ACCOUNT_SUPPLIED_BY_SCAMMER", recommended_action: "HOLD_FOR_REVIEW", signals: expect.arrayContaining(["OPERATOR_VERIFIED"]) });
   expect(hit.risk_score).toBeGreaterThanOrEqual(0.85);
@@ -418,6 +416,8 @@ test("POST /internal/entities/{id}/verify", async () => {
   expect(hit.evidence!.captured_at).toEqual(isoDate);
   expect(hit.evidence!.excerpt).toContain(account.slice(0, 4) + "xxxx");
   expect(hit.evidence!.excerpt, "no unmasked account number in evidence").not.toMatch(/\d{6,}/);
+
+  expect((await api.post(`/internal/entities/${e.id}/verify`, { data: { decision: "perhaps" } })).status()).toBe(400);
   expect((await api.post(`/internal/entities/999999999/verify`, { data: { decision: "verified" } })).status()).toBe(404);
 });
 
