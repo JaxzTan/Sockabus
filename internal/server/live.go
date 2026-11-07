@@ -80,6 +80,7 @@ func (a *liveAPI) register(mux *http.ServeMux) {
 	h("POST /internal/entities/{id}/verify", a.verify)
 
 	h("GET /internal/status", a.getStatus)
+	h("POST /internal/auth/google/check", googleCheck)
 
 	if a.sim != nil {
 		h("POST /internal/sim/accounts", a.simAccount)

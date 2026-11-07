@@ -83,9 +83,9 @@ jobs:
       - name: Write CI .env
         run: |
           token=$(openssl rand -hex 24)
-          console_pw=$(openssl rand -hex 16)
+          session_secret=$(openssl rand -hex 32)
           echo "::add-mask::$token"
-          echo "::add-mask::$console_pw"
+          echo "::add-mask::$session_secret"
           cat > .env <<EOF
           SOCKABUS_ENV=ci
           SOCKABUS_MODE=live
@@ -103,13 +103,15 @@ jobs:
           SOCKABUS_TEMPORAL_TASK_QUEUE=sockabus-e2e
           SOCKABUS_TG_APP_ID=1
           SOCKABUS_TG_APP_HASH=ci-no-sessions
-          SOCKABUS_CONSOLE_USER=e2e-operator
-          SOCKABUS_CONSOLE_PASSWORD=$console_pw
+          SOCKABUS_SESSION_SECRET=$session_secret
+          SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS=e2e-operator@sockabus.test
+          GOOGLE_CLIENT_ID=ci-not-a-real-client.apps.googleusercontent.com
+          GOOGLE_CLIENT_SECRET=ci-not-a-real-secret
           EOF
           # Connector on with no session files (nothing connects); console sign-in on, as in production.
           echo "SOCKABUS_OPERATOR_TOKEN=$token" >> "$GITHUB_ENV"
-          echo "SOCKABUS_CONSOLE_USER=e2e-operator" >> "$GITHUB_ENV"
-          echo "SOCKABUS_CONSOLE_PASSWORD=$console_pw" >> "$GITHUB_ENV"
+          echo "SOCKABUS_SESSION_SECRET=$session_secret" >> "$GITHUB_ENV"
+          echo "SOCKABUS_E2E_CONSOLE_EMAIL=e2e-operator@sockabus.test" >> "$GITHUB_ENV"
           echo "SOCKABUS_E2E_LLM=fake" >> "$GITHUB_ENV"
           echo "SOCKABUS_E2E_PSQL=docker compose exec -T postgres psql -U buru -d buru" >> "$GITHUB_ENV"
 

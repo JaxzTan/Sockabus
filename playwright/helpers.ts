@@ -1,5 +1,6 @@
 // Shared helpers for the Playwright API and UI tests (TRD §9).
 import { execFileSync } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
 import { expect, request, type APIRequestContext, type Page } from "@playwright/test";
 
 export const API_URL = process.env.SOCKABUS_API_URL ?? "http://localhost:8080";
@@ -134,18 +135,25 @@ export async function retirePersona(api: APIRequestContext, personaId: number) {
   await api.post(`/internal/personas/${personaId}/status`, { data: { status: "retired" } });
 }
 
-// Sign in to the console when its gate is on. Fails (never skips) when credentials are missing.
+// Console sign-in is Google only, which a test can't drive. Tests mint the same session cookie the
+// callback sets (web/src/lib/auth.ts makeSession): "<b64url email>.<expiry ms>.<HMAC>", keyed by
+// SOCKABUS_SESSION_SECRET. The email must be on the console's allowlist (SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS).
+export const CONSOLE_EMAIL = (process.env.SOCKABUS_E2E_CONSOLE_EMAIL ?? "e2e-operator@sockabus.test").toLowerCase();
+export function consoleSessionCookie(): { name: string; value: string } {
+  const secret = process.env.SOCKABUS_SESSION_SECRET ?? "";
+  expect(secret.length >= 32, "console sign-in is on: set SOCKABUS_SESSION_SECRET (same as the console's)").toBeTruthy();
+  const payload = `${Buffer.from(CONSOLE_EMAIL).toString("base64url")}.${Date.now() + 60 * 60 * 1000}`;
+  const key = createHash("sha256").update("sockabus-console:session:" + secret).digest();
+  return { name: "sockabus_session", value: `${payload}.${createHmac("sha256", key).update(payload).digest("base64url")}` };
+}
+
+// Sign in to the console when its gate is on. Fails (never skips) when the session secret is missing.
 export async function signIn(page: Page, path: string) {
   await page.goto(path);
   if (!page.url().includes("/sign-in")) return;
-  const user = process.env.SOCKABUS_CONSOLE_USER;
-  const password = process.env.SOCKABUS_CONSOLE_PASSWORD;
-  expect(user && password, "console sign-in is on: set SOCKABUS_CONSOLE_USER and SOCKABUS_CONSOLE_PASSWORD").toBeTruthy();
-  await page.getByTestId("signin-user").fill(user!);
-  await page.getByTestId("signin-password").fill(password!);
-  await page.getByTestId("signin-submit").click();
-  await page.waitForURL((u) => !u.pathname.startsWith("/sign-in"));
+  await page.context().addCookies([{ ...consoleSessionCookie(), url: new URL(page.url()).origin, httpOnly: true, sameSite: "Lax" }]);
   await page.goto(path);
+  await expect(page).not.toHaveURL(/\/sign-in/);
 }
 
 // A persona built from fields through POST /internal/personas (no LLM call), active, with playbooks.

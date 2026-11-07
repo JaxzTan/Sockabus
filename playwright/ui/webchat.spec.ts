@@ -1,6 +1,6 @@
 // Demo path through the console's web chat page (TRD §9 UI regression). The console must point at
-// a backend set up as for the API tests. If console sign-in is on, set SOCKABUS_CONSOLE_USER and
-// SOCKABUS_CONSOLE_PASSWORD for the test run too (the test fails without them; it never skips).
+// a backend set up as for the API tests. If console sign-in is on, set SOCKABUS_SESSION_SECRET (and
+// SOCKABUS_E2E_CONSOLE_EMAIL if not the default) for the test run too (it fails without them; never skips).
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { type Conversation, freshAccountNumber, generateActivePersona, group4, operatorContext, pollFor, retirePersona, signIn } from "../helpers";
 

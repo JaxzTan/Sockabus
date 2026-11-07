@@ -23,6 +23,8 @@ type Server struct {
 	eng   *engine.Engine
 	live  *liveAPI // SOCKABUS_MODE=live: PostgreSQL-backed API (takes precedence over demo)
 
+	demoToken string // guards POST /internal/auth/google/check in demo mode; empty refuses every call
+
 	temporal func(context.Context) error // readyz check; nil skips it
 }
 
@@ -71,6 +73,13 @@ func (s *Server) WithDemo(st *demostore.Store) *Server {
 	return s
 }
 
+// WithOperatorToken sets the bearer token demo mode requires on POST /internal/auth/google/check
+// (the console's Google sign-in allowlist). Live mode uses the token given to WithLive.
+func (s *Server) WithOperatorToken(token string) *Server {
+	s.demoToken = token
+	return s
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
@@ -80,6 +89,7 @@ func (s *Server) Routes() http.Handler {
 		s.live.register(mux)
 	case s.demo != nil:
 		s.registerDemo(mux)
+		mux.Handle("POST /internal/auth/google/check", (&liveAPI{token: s.demoToken}).auth(googleCheck))
 	}
 	return mux
 }

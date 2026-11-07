@@ -89,7 +89,7 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		srv = srv.WithDemo(demo)
+		srv = srv.WithDemo(demo).WithOperatorToken(os.Getenv("SOCKABUS_OPERATOR_TOKEN"))
 	}
 
 	if err := w.Start(); err != nil {

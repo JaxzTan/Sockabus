@@ -63,8 +63,13 @@ services:
         SOCKABUS_API_URL: http://app:8080 # browser calls /api/*, Next proxies to the app container
     environment:
       SOCKABUS_OPERATOR_TOKEN: ${SOCKABUS_OPERATOR_TOKEN:-} # added by the /api proxy, never sent to the browser
-      SOCKABUS_CONSOLE_USER: ${SOCKABUS_CONSOLE_USER:-} # console sign-in, checked on the Next server
-      SOCKABUS_CONSOLE_PASSWORD: ${SOCKABUS_CONSOLE_PASSWORD:-}
+      # Console sign-in with Google, done on the Next server (web/src/lib/auth.ts, web/src/lib/google.ts)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      SOCKABUS_SESSION_SECRET: ${SOCKABUS_SESSION_SECRET:-}
+      SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS: ${SOCKABUS_CONSOLE_GOOGLE_ALLOWED_EMAILS:-}
+      SOCKABUS_CONSOLE_GOOGLE_ALLOWED_DOMAIN: ${SOCKABUS_CONSOLE_GOOGLE_ALLOWED_DOMAIN:-}
       SOCKABUS_CONSOLE_AUTH: ${SOCKABUS_CONSOLE_AUTH:-}
       # /automate reads Playwright results from disk (web/src/lib/e2e-results.ts); the report and
       # screenshots are found one level up from it (/e2e/playwright-report, /e2e/test-results).

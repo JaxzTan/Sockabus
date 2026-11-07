@@ -7,6 +7,8 @@ import { expect, request, test, type APIRequestContext } from "@playwright/test"
 import {
   type Account,
   API_URL,
+  CONSOLE_EMAIL,
+  consoleSessionCookie,
   type Conversation,
   type ConversationDetail,
   type Entity,
@@ -656,31 +658,33 @@ test("GET /internal/accounts/{id}/health", async () => {
 
 // ───────────────────────── web/src/app/api/**/route.ts ─────────────────────────
 
-// A console context signed in through the real sign-in route.
+// A console context with a session cookie (Google sign-in can't be driven by a test; see consoleSessionCookie).
 async function consoleSession(): Promise<APIRequestContext> {
-  const ctx = await request.newContext({ baseURL: WEB_URL });
-  const user = process.env.SOCKABUS_CONSOLE_USER;
-  const password = process.env.SOCKABUS_CONSOLE_PASSWORD;
-  expect(user && password, "set SOCKABUS_CONSOLE_USER / SOCKABUS_CONSOLE_PASSWORD (console sign-in)").toBeTruthy();
-  const res = await ctx.post("/api/auth/sign-in", { form: { user: user!, password: password! }, maxRedirects: 0 });
-  expect(res.status()).toBe(303);
-  return ctx;
+  const { hostname } = new URL(WEB_URL);
+  const c = consoleSessionCookie();
+  return request.newContext({
+    baseURL: WEB_URL,
+    storageState: { cookies: [{ ...c, domain: hostname, path: "/", expires: -1, httpOnly: true, secure: false, sameSite: "Lax" }], origins: [] },
+  });
 }
 
-test("web POST /api/auth/sign-in", async () => {
+test("web /api/auth sign-in routes", async () => {
   const ctx = await request.newContext({ baseURL: WEB_URL });
-  const wrongPw = await ctx.post("/api/auth/sign-in", { form: { user: process.env.SOCKABUS_CONSOLE_USER ?? "", password: "definitely-wrong", next: "/verify" }, maxRedirects: 0 });
-  expect(wrongPw.status()).toBe(303);
-  expect(wrongPw.headers()["location"]).toBe("/sign-in?error=wrong&next=%2Fverify");
-  expect(wrongPw.headers()["set-cookie"] ?? "").not.toContain("sockabus_session=");
-
-  const ok = await ctx.post("/api/auth/sign-in", {
-    form: { user: process.env.SOCKABUS_CONSOLE_USER ?? "", password: process.env.SOCKABUS_CONSOLE_PASSWORD ?? "", next: "/verify" },
-    maxRedirects: 0,
-  });
-  expect(ok.status()).toBe(303);
-  expect(ok.headers()["location"]).toBe("/verify");
-  expect(ok.headers()["set-cookie"]).toMatch(/sockabus_session=[^;]+;.*HttpOnly/i);
+  // Password sign-in is gone.
+  expect((await ctx.post("/api/auth/sign-in", { form: { user: "x", password: "y" }, maxRedirects: 0 })).status()).not.toBe(303);
+  // Google start: off to Google with state, nonce and a PKCE S256 challenge in a short-lived httpOnly cookie.
+  const start = await ctx.get("/api/auth/google?next=/verify", { maxRedirects: 0 });
+  expect(start.status()).toBe(307);
+  const to = new URL(start.headers()["location"]);
+  expect(to.origin).toBe("https://accounts.google.com");
+  for (const k of ["state", "nonce", "code_challenge", "client_id", "redirect_uri"]) expect(to.searchParams.get(k), k).toBeTruthy();
+  expect(to.searchParams.get("code_challenge_method")).toBe("S256");
+  expect(start.headers()["set-cookie"]).toMatch(/sockabus_oauth=[^;]+;.*HttpOnly/i);
+  // A callback whose state doesn't match the flow cookie is refused, and no session is set.
+  const bad = await ctx.get("/api/auth/google/callback?code=x&state=not-the-state", { maxRedirects: 0 });
+  expect(bad.status()).toBe(303);
+  expect(bad.headers()["location"]).toBe("/sign-in?error=state&next=%2Fverify");
+  expect(bad.headers()["set-cookie"] ?? "").not.toContain("sockabus_session=");
   await ctx.dispose();
 });
 
@@ -694,7 +698,7 @@ test("web GET /api/auth/me", async () => {
   const ctx = await consoleSession();
   const res = await ctx.get("/api/auth/me");
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ user: process.env.SOCKABUS_CONSOLE_USER, gate: true });
+  expect(await res.json()).toEqual({ user: CONSOLE_EMAIL, gate: true });
   await ctx.dispose();
 });
 
