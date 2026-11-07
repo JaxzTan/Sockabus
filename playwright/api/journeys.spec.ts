@@ -332,7 +332,7 @@ test("d. AI summary of personas and active chats", async ({ page }) => {
 
   await test.step("the dashboard card \"Summary · today\" shows the AI overview", async () => {
     // This test is in the api project (baseURL = Go API), so console pages use WEB_URL.
-    await signIn(page, `${WEB_URL}/`);
+    await signIn(page, `${WEB_URL}/home`);
     const card = page.getByTestId("overview-ai-summary-text");
     await expect(card).toBeVisible({ timeout: 120_000 });
     // The card shows the newest stored overview (it may regenerate one itself if the counts moved).

@@ -8,7 +8,7 @@ import { Loading } from "@/components/ui";
 import { dismissToast, flushDecisions, liveConvos, queueOf, refresh, resetDemo, startSync, USE_SAMPLE, useStore } from "@/lib/store";
 
 const OPERATE = [
-  { href: "/", label: "Dashboard", id: "overview" },
+  { href: "/home", label: "Dashboard", id: "overview" },
   { href: "/personas", label: "Personas", id: "personas" },
   { href: "/conversations", label: "Conversations", id: "conversations" },
   { href: "/verify", label: "Verify queue", id: "verify" },
@@ -47,7 +47,7 @@ export function Shell({ children }: { children: ReactNode }) {
               {open ? "Hide menu" : "Show menu"}
             </button>
             {!open && (
-              <Link href="/" className="mini-brand" aria-label="Sockabus dashboard">
+              <Link href="/home" className="mini-brand" aria-label="Sockabus dashboard">
                 <Image src="/logo.png" alt="" width={36} height={24} />
                 <b>Sockabus</b>
               </Link>
@@ -128,8 +128,8 @@ function FlushOnNavigate() {
 
 type NavItem = (typeof OPERATE)[number];
 
-// "/" is only "here" on the overview itself; every other item also covers its sub-pages.
-const isHere = (path: string | undefined, href: string) => (href === "/" ? path === "/" : !!path?.startsWith(href));
+// Every nav item is "here" on its own page and its sub-pages.
+const isHere = (path: string | undefined, href: string) => !!path?.startsWith(href);
 
 // usePathname is runtime data, so the active highlight streams in behind Suspense.
 function NavLinks({ items, counts }: { items: NavItem[]; counts: Record<string, number> }) {
@@ -174,7 +174,7 @@ function Rail({ hidden }: { hidden: boolean }) {
       : "Open Status for details";
   return (
     <aside className="rail" id="sidebar" aria-label="Sockabus navigation" hidden={hidden}>
-      <Link href="/" className="brand" aria-label="Sockabus dashboard">
+      <Link href="/home" className="brand" aria-label="Sockabus dashboard">
         <Image src="/logo.png" alt="Sockabus mascot" width={52} height={34} priority />
         <div>
           <b>Sockabus</b>

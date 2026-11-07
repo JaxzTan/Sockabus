@@ -1,5 +1,5 @@
 "use client";
-// Dashboard (/), laid out like the design (docs/front-end/sockabus-console, gallery/dashboard.png).
+// Dashboard (/home), laid out like the design (docs/front-end/sockabus-console, gallery/dashboard.png).
 // Built from what store.ts already polls; every number is counted from that data. The "Summary ·
 // today" card adds the AI overview from GET /internal/summary (written by Claude on the Go side) above
 // the counted lines.
