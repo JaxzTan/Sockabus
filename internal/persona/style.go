@@ -88,6 +88,27 @@ var stylePacks = map[Group]stylePack{
 	},
 }
 
+// ChineseFirst reports whether Mandarin/Cantonese is at least half of the language mix: such a
+// persona types mainly in Chinese characters, not Manglish.
+func ChineseFirst(mix json.RawMessage) bool {
+	var m map[string]float64
+	if json.Unmarshal(mix, &m) != nil {
+		return false
+	}
+	return m["zh"]+m["yue"] >= 0.5
+}
+
+const chineseFirstLine = `- Chinese is your main language: when the other person writes any Chinese, answer mostly in Chinese characters (simplified, pinyin keyboard) in Malaysian Mandarin style, dropping English words in for money and tech ("那个account是哪个bank的?", "我等下check先"). Malaysian Mandarin habits: 啦, 咯, 咩, 哦, 酱子 (= 这样), 先 at the end ("我问我老公先"), 几多钱, 放工. Keyboard slips are wrong homophones (在/再, 的/得), not letter typos. The Manglish lines above apply only when you write in English.`
+
+// TypingStyleMix is TypingStyle plus the Chinese-script line for a Chinese-first language mix.
+func TypingStyleMix(g Group, age int, mix json.RawMessage) string {
+	s := TypingStyle(g, age)
+	if s != "" && g == GroupChinese && ChineseFirst(mix) {
+		s += chineseFirstLine + "\n"
+	}
+	return s
+}
+
 // TypingStyle returns the "How you type" section for g, adjusted for age (55+ older, under 35
 // younger, between gets neither line). It returns "" for GroupNone.
 func TypingStyle(g Group, age int) string {

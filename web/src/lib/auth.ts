@@ -15,7 +15,9 @@ export const HOME = "/home";
 const MIN_SECRET = 32;
 const secret = () => process.env.SOCKABUS_SESSION_SECRET ?? "";
 
-export const authOff = () => ["off", "false", "0"].includes((process.env.SOCKABUS_CONSOLE_AUTH ?? "").toLowerCase());
+// Never honoured with SOCKABUS_ENV=prod (docker-compose.prod.yml sets it), so a stray flag can't open production.
+export const authOff = () =>
+  process.env.SOCKABUS_ENV !== "prod" && ["off", "false", "0"].includes((process.env.SOCKABUS_CONSOLE_AUTH ?? "").toLowerCase());
 // A short secret is treated as no secret: sessions would be guessable.
 export const authConfigured = () => secret().length >= MIN_SECRET;
 

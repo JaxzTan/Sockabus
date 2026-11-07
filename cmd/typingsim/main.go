@@ -50,6 +50,12 @@ var samples = []sample{
 		Backstory:   "Lorry dispatcher in Johor Bahru. Plays futsal, saving to get married."}},
 }
 
+var zhScript = []string{
+	"你好，我是Ace Capital的Jenny，看到你的资料。我们有一个投资配套，每个月回酬30%",
+	"很安全的，我的客户全部都有赚。最低只需要RM500就可以开始",
+	"好的，你现在可以先transfer到我们公司的户口，之后我发login给你",
+}
+
 var defaultScript = []string{
 	"hi, saw your profile. i am Jenny from Ace Capital, we have investment plan 30% return monthly",
 	"very safe one, my clients all got profit. minimum only RM500 to start",
@@ -62,7 +68,17 @@ func main() {
 	group := flag.String("group", "all", "chinese | malay | indian | all")
 	msg := flag.String("msg", "", "one scammer message instead of the built-in 3-message script")
 	typos := flag.Float64("typos", 0.08, "per-bubble typo rate (0 = none)")
+	personaFile := flag.String("persona", "", "persona generator JSON (array or object) to test instead of the built-in samples")
+	lang := flag.String("lang", "en", "built-in scammer script: en | zh")
 	flag.Parse()
+	if *personaFile != "" {
+		p, err := loadPersona(*personaFile)
+		if err != nil {
+			fail(err)
+		}
+		samples = []sample{{persona.GroupFor(p.Ethnicity, p.LanguageMix), p}}
+		*group = "all"
+	}
 
 	client, err := llm.New(llm.Config{Provider: *provider, Model: *model, GeminiKey: os.Getenv("GEMINI_API_KEY"),
 		AnthropicKey: os.Getenv("ANTHROPIC_API_KEY"), ThinkingLevel: "low",
@@ -74,6 +90,9 @@ func main() {
 		fail(fmt.Errorf("no API key for provider %q (set it in .env)", *provider))
 	}
 	script := defaultScript
+	if *lang == "zh" {
+		script = zhScript
+	}
 	if *msg != "" {
 		script = []string{*msg}
 	}
@@ -129,4 +148,42 @@ func envOr(k, def string) string {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "typingsim:", err)
 	os.Exit(1)
+}
+
+// loadPersona reads one persona from the persona generator's output format (see the
+// honeypot-persona-generator skill): a JSON array (first item) or a single object.
+func loadPersona(path string) (persona.Profile, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return persona.Profile{}, err
+	}
+	type gen struct {
+		Persona struct {
+			Name          string          `json:"name"`
+			Age           int             `json:"age"`
+			LanguageMix   json.RawMessage `json:"language_mix"`
+			Backstory     string          `json:"backstory"`
+			WealthProfile json.RawMessage `json:"wealth_profile"`
+		} `json:"persona"`
+		Profile struct {
+			Ethnicity string `json:"ethnicity"`
+		} `json:"profile"`
+		PromptVersion struct {
+			SystemPrompt string `json:"system_prompt"`
+		} `json:"prompt_version"`
+	}
+	var list []gen
+	if json.Unmarshal(raw, &list) != nil {
+		var one gen
+		if err := json.Unmarshal(raw, &one); err != nil {
+			return persona.Profile{}, fmt.Errorf("%s: not persona generator JSON: %w", path, err)
+		}
+		list = []gen{one}
+	}
+	if len(list) == 0 || list[0].Persona.Name == "" {
+		return persona.Profile{}, fmt.Errorf("%s: no persona in file", path)
+	}
+	g := list[0]
+	return persona.Profile{Name: g.Persona.Name, Age: g.Persona.Age, Ethnicity: g.Profile.Ethnicity, LanguageMix: g.Persona.LanguageMix,
+		Backstory: g.Persona.Backstory, Wealth: g.Persona.WealthProfile, SystemPrompt: g.PromptVersion.SystemPrompt}, nil
 }

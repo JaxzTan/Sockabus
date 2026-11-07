@@ -3,11 +3,19 @@
 // answers 401 JSON (the browser code then opens /sign-in). A signed-in visit to /sign-in goes on to /home.
 import { NextResponse, type NextRequest } from "next/server";
 import { authOff, HOME, publicOrigin, readSession, safeNext, SESSION_COOKIE } from "@/lib/auth";
+import { allow } from "@/lib/ratelimit";
 
 const PUBLIC = new Set(["/sign-in", "/api/auth/google", "/api/auth/google/callback"]);
 
 export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
+  // Sign-in routes: 20 per minute per client IP (Caddy's X-Forwarded-For), then 429.
+  if (pathname.startsWith("/api/auth/")) {
+    const ip = (req.headers.get("x-forwarded-for") ?? "").split(",").at(-1)?.trim() || "unknown";
+    if (!allow(`auth|${ip}`, 20, 60_000)) {
+      return NextResponse.json({ error: "Too many sign-in attempts. Try again in a minute." }, { status: 429, headers: { "retry-after": "60" } });
+    }
+  }
   const off = authOff();
   const signedIn = off || !!readSession(req.cookies.get(SESSION_COOKIE)?.value);
 

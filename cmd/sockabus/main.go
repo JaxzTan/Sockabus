@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/JaxzTan/Buru_AI/internal/honeypot"
 	"github.com/JaxzTan/Buru_AI/internal/llm"
 	"github.com/JaxzTan/Buru_AI/internal/msgcrypt"
+	"github.com/JaxzTan/Buru_AI/internal/rag"
 	"github.com/JaxzTan/Buru_AI/internal/server"
 	"github.com/JaxzTan/Buru_AI/internal/workflows"
 )
@@ -89,7 +91,20 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		srv = srv.WithDemo(demo).WithOperatorToken(os.Getenv("SOCKABUS_OPERATOR_TOKEN"))
+		token := os.Getenv("SOCKABUS_OPERATOR_TOKEN")
+		if cfg.Env == "prod" && len(token) < 24 {
+			return errors.New("SOCKABUS_ENV=prod in demo mode needs SOCKABUS_OPERATOR_TOKEN (at least 24 characters): the API would be open otherwise")
+		}
+		srv = srv.WithDemo(demo).WithOperatorToken(token)
+	}
+
+	srv = srv.WithCORS(strings.Split(os.Getenv("SOCKABUS_CORS_ORIGINS"), ","))
+	if strings.EqualFold(os.Getenv("SOCKABUS_RATE_LIMIT"), "off") {
+		if cfg.Env == "prod" {
+			return errors.New("SOCKABUS_RATE_LIMIT=off is not allowed with SOCKABUS_ENV=prod")
+		}
+		log.Warn("SOCKABUS_RATE_LIMIT=off: per-client rate limits disabled")
+		srv = srv.WithoutRateLimit()
 	}
 
 	if err := w.Start(); err != nil {
@@ -192,6 +207,12 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 		log.Info("persona timing overrides from SOCKABUS_PERSONA_TIMING", "personas", len(l.PersonaTiming))
 	}
 	svc.GenLLM, svc.SummaryLLM = genLLM, summaryLLM
+	if l.RAG {
+		svc.RAG = &rag.Index{}
+		go svc.RunRAG(ctx, l.RAGRefresh)
+	} else {
+		log.Info("SOCKABUS_RAG=0: persona prompts get no examples from past chats")
+	}
 	var simHub *sim.Hub
 	if l.SimEnabled {
 		simHub = sim.NewHub()

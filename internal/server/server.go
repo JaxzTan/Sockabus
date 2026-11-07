@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -26,6 +27,21 @@ type Server struct {
 	demoToken string // guards POST /internal/auth/google/check in demo mode; empty refuses every call
 
 	temporal func(context.Context) error // readyz check; nil skips it
+
+	corsOrigins []string // SOCKABUS_CORS_ORIGINS; empty sends no CORS headers
+	noRateLimit bool     // SOCKABUS_RATE_LIMIT=off (load tests only)
+}
+
+// WithCORS allows cross-origin browser calls from exactly these origins ("*" is ignored).
+func (s *Server) WithCORS(origins []string) *Server {
+	s.corsOrigins = origins
+	return s
+}
+
+// WithoutRateLimit turns the per-client rate limits off. For load tests only.
+func (s *Server) WithoutRateLimit() *Server {
+	s.noRateLimit = true
+	return s
 }
 
 // WithLive serves the PostgreSQL-backed operator API (/internal/*) and lookup (/v1/lookup).
@@ -88,10 +104,25 @@ func (s *Server) Routes() http.Handler {
 	case s.live != nil:
 		s.live.register(mux)
 	case s.demo != nil:
-		s.registerDemo(mux)
+		demoMux := http.NewServeMux()
+		s.registerDemo(demoMux)
+		if s.demoToken != "" {
+			// With an operator token set, demo mode guards its API like live mode does: the Next.js
+			// /api proxy adds the token, so only the signed-in console (and holders of the token) get in.
+			mux.Handle("/v1/", (&liveAPI{token: s.demoToken}).auth(demoMux.ServeHTTP))
+			mux.Handle("/internal/", (&liveAPI{token: s.demoToken}).auth(demoMux.ServeHTTP))
+		} else {
+			slog.Warn("demo mode without SOCKABUS_OPERATOR_TOKEN: /v1/* and /internal/* are unauthenticated (local use only)")
+			mux.Handle("/v1/", demoMux)
+			mux.Handle("/internal/", demoMux)
+		}
 		mux.Handle("POST /internal/auth/google/check", (&liveAPI{token: s.demoToken}).auth(googleCheck))
 	}
-	return mux
+	var h http.Handler = mux
+	if !s.noRateLimit {
+		h = newRateLimiter().middleware(h)
+	}
+	return securityHeaders(cors(s.corsOrigins, h))
 }
 
 // healthz reports that the process is alive. It checks no dependencies, so a database or
@@ -107,19 +138,23 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 
 	checks := map[string]string{"postgres": "ok", "redis": "ok"}
 	status := http.StatusOK
-	if err := s.db.Ping(ctx); err != nil {
-		checks["postgres"] = err.Error()
+	// /readyz is public (Caddyfile): report only "unavailable", never the error, which can carry
+	// hostnames, ports or connection-string details. The cause goes to the server log.
+	down := func(name string, err error) {
+		slog.Warn("readyz: dependency unavailable", "dependency", name, "err", err)
+		checks[name] = "unavailable"
 		status = http.StatusServiceUnavailable
 	}
+	if err := s.db.Ping(ctx); err != nil {
+		down("postgres", err)
+	}
 	if err := s.redis.Ping(ctx).Err(); err != nil {
-		checks["redis"] = err.Error()
-		status = http.StatusServiceUnavailable
+		down("redis", err)
 	}
 	if s.temporal != nil {
 		checks["temporal"] = "ok"
 		if err := s.temporal(ctx); err != nil {
-			checks["temporal"] = err.Error()
-			status = http.StatusServiceUnavailable
+			down("temporal", err)
 		}
 	}
 	writeJSON(w, status, checks)

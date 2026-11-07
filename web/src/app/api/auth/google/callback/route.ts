@@ -5,16 +5,17 @@
 import { cookies } from "next/headers";
 import { authConfigured, authEvent, cookieOptions, emailAllowed, HOME, isHttps, makeSession, redirectTo, same, SESSION_COOKIE } from "@/lib/auth";
 import { exchange, FLOW_COOKIE, FLOW_PATH, googleConfigured, readFlow, SignInError } from "@/lib/google";
-import { goAPI } from "@/lib/server-api";
+import { clientIP, goAPI } from "@/lib/server-api";
 
 // The Go backend holds the authoritative allowlist (internal/server/consoleauth.go). Fail closed: only a
 // 200 {"allowed":true} lets the sign-in through; a 403, a 401 (token mismatch), an unreachable API or a
 // malformed answer all refuse it.
-async function backendAllows(email: string): Promise<boolean> {
+async function backendAllows(email: string, ip: string | null): Promise<boolean> {
   const res = await goAPI("/internal/auth/google/check", {
     method: "POST",
     body: JSON.stringify({ email }),
     contentType: "application/json",
+    clientIP: ip,
   });
   if (res.status !== 200) return false;
   const body: unknown = await res.json().catch(() => null);
@@ -52,7 +53,7 @@ export async function GET(req: Request) {
     return fail("exchange", "unexpected");
   }
   if (!emailAllowed(email)) return fail("not_allowed", "not_on_allowlist", email);
-  if (!(await backendAllows(email).catch(() => false))) return fail("not_allowed", "backend_refused_or_unreachable", email);
+  if (!(await backendAllows(email, clientIP(req)).catch(() => false))) return fail("not_allowed", "backend_refused_or_unreachable", email);
 
   authEvent("google_sign_in", { email });
   const res = redirectTo(flow.next, 303);

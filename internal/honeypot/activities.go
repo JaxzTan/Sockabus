@@ -2,7 +2,6 @@ package honeypot
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -295,12 +294,7 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.GenerateRep
 	}
 
 	prof := persona.Profile{Name: p.Name, Age: int(p.Age.Int16), LanguageMix: p.LanguageMix, Backstory: p.Backstory.String, Wealth: p.WealthProfile}
-	var pf struct {
-		Ethnicity string `json:"ethnicity"`
-	}
-	if json.Unmarshal(p.Profile, &pf) == nil {
-		prof.Ethnicity = pf.Ethnicity
-	}
+	prof.Ethnicity = profileEthnicity(p.Profile)
 	if pv, err := s.Q.LatestPromptVersion(ctx, p.ID); err == nil {
 		prof.SystemPrompt = pv.SystemPrompt
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -322,6 +316,7 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.GenerateRep
 	}
 	sit := persona.Situation{Channel: string(acct.Channel), ScamType: scam, Stage: stage, Now: s.Now(), Got: got,
 		NoIgnore: in.NoIgnore, WasAway: in.WasAway}
+	sit.Similar = s.similarReplies(hist, conv.ID, p.ID, scam, string(persona.GroupFor(prof.Ethnicity, prof.LanguageMix)))
 	// How long the scammer has waited: since their first message after the persona's last one.
 	for i := len(hist) - 1; i >= 0 && hist[i].Direction == string(db.MessageDirectionInbound); i-- {
 		if !hist[i].SentAt.IsZero() {

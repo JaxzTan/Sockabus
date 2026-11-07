@@ -454,6 +454,76 @@ func (q *Queries) ListPersonasForDedupe(ctx context.Context) ([]ListPersonasForD
 	return items, nil
 }
 
+const listRAGMessages = `-- name: ListRAGMessages :many
+SELECT m.id, m.conversation_id, m.direction, m.sender_type, m.body_ciphertext, m.dek_ref, m.sent_at,
+       c.scam_type, a.persona_id, p.profile, p.language_mix
+FROM messages m
+JOIN conversations c ON c.id = m.conversation_id
+JOIN honeypot_accounts a ON a.id = c.account_id
+JOIN personas p ON p.id = a.persona_id
+WHERE m.conversation_id IN (
+    SELECT s.conversation_id FROM entity_sightings s
+    JOIN entities e ON e.id = s.entity_id
+    WHERE e.type IN ('bank_account', 'wallet') AND e.status <> 'rejected' AND s.extracted_at >= $1
+)
+ORDER BY m.conversation_id, m.sent_at, m.id
+LIMIT $2
+`
+
+type ListRAGMessagesParams struct {
+	Since    time.Time `json:"since"`
+	RowLimit int32     `json:"row_limit"`
+}
+
+type ListRAGMessagesRow struct {
+	ID             int64            `json:"id"`
+	ConversationID int64            `json:"conversation_id"`
+	Direction      MessageDirection `json:"direction"`
+	SenderType     SenderType       `json:"sender_type"`
+	BodyCiphertext []byte           `json:"body_ciphertext"`
+	DekRef         string           `json:"dek_ref"`
+	SentAt         time.Time        `json:"sent_at"`
+	ScamType       NullScamType     `json:"scam_type"`
+	PersonaID      int64            `json:"persona_id"`
+	Profile        json.RawMessage  `json:"profile"`
+	LanguageMix    json.RawMessage  `json:"language_mix"`
+}
+
+// Every message of conversations where the persona got a bank account or wallet out of the
+// scammer since sqlc.arg(since), in chat order, with the persona's profile so retrieval can prefer
+// personas of the same community. Feeds the in-memory reply retrieval index (internal/rag).
+func (q *Queries) ListRAGMessages(ctx context.Context, arg ListRAGMessagesParams) ([]ListRAGMessagesRow, error) {
+	rows, err := q.db.Query(ctx, listRAGMessages, arg.Since, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRAGMessagesRow{}
+	for rows.Next() {
+		var i ListRAGMessagesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversationID,
+			&i.Direction,
+			&i.SenderType,
+			&i.BodyCiphertext,
+			&i.DekRef,
+			&i.SentAt,
+			&i.ScamType,
+			&i.PersonaID,
+			&i.Profile,
+			&i.LanguageMix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentMessages = `-- name: ListRecentMessages :many
 SELECT id, conversation_id, direction, sender_type, operator_id, body_ciphertext, dek_ref, sent_at, dedupe_key FROM messages
 WHERE conversation_id = $1

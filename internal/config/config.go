@@ -42,8 +42,12 @@ type Live struct {
 	// PersonaProvider overrides LLMProvider for chat replies only (e.g. "openai" for a Malaysian
 	// model); persona generation, extraction and summaries stay on LLMProvider.
 	PersonaProvider string
-	OpenAIBaseURL   string
-	OpenAIAPIKey    string
+	// RAG: put replies that worked in past chats into the persona prompt (SOCKABUS_RAG, default on);
+	// the in-memory index is rebuilt every RAGRefresh (SOCKABUS_RAG_REFRESH, default 10m).
+	RAG           bool
+	RAGRefresh    time.Duration
+	OpenAIBaseURL string
+	OpenAIAPIKey  string
 
 	TelegramAppID      int
 	TelegramAppHash    string
@@ -179,6 +183,19 @@ func Load() (Config, error) {
 	}
 	if l.Inactivity, err = durEnv("SOCKABUS_INACTIVITY", 72*time.Hour); err != nil {
 		return c, err
+	}
+	switch strings.ToLower(strings.TrimSpace(getenv("SOCKABUS_RAG", "1"))) {
+	case "1", "true", "on":
+		l.RAG = true
+	case "0", "false", "off":
+	default:
+		return c, fmt.Errorf("SOCKABUS_RAG must be 1 or 0")
+	}
+	if l.RAGRefresh, err = durEnv("SOCKABUS_RAG_REFRESH", 10*time.Minute); err != nil {
+		return c, err
+	}
+	if l.RAGRefresh < time.Minute {
+		return c, fmt.Errorf("SOCKABUS_RAG_REFRESH must be at least 1m")
 	}
 	if l.LLMTimeout, err = durEnv("SOCKABUS_LLM_TIMEOUT", 45*time.Second); err != nil {
 		return c, err

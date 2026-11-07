@@ -1,6 +1,6 @@
 // Bank simulator lookup (S5). The browser sends bank + account here; this route calls
 // POST /v1/lookup with the lookup token, so the token never reaches the browser.
-import { goAPI, lookupToken } from "@/lib/server-api";
+import { clientIP, goAPI, lookupToken } from "@/lib/server-api";
 
 export async function POST(req: Request) {
   let bank = "";
@@ -20,6 +20,7 @@ export async function POST(req: Request) {
     contentType: "application/json",
     token: lookupToken(),
     body: JSON.stringify({ type: "bank_account", value: account, bank }),
+    clientIP: clientIP(req),
   });
   const ms = Math.round(performance.now() - t0);
   const json: unknown = await res.json().catch(() => null);

@@ -65,3 +65,32 @@ func TestSystemPromptIncludesStyle(t *testing.T) {
 		t.Error("persona without ethnicity or mix must not get a pack")
 	}
 }
+
+func TestSystemPromptSimilar(t *testing.T) {
+	sit := Situation{Stage: playbook.Generic(playbook.Bait), Now: time.Now()}
+	if strings.Contains(SystemPrompt(Profile{Name: "A", Age: 40}, sit), "What worked before") {
+		t.Fatal("no examples → no section")
+	}
+	sit.Similar = []string{"aiyo app error, got other account?"}
+	s := SystemPrompt(Profile{Name: "A", Age: 40}, sit)
+	if !strings.Contains(s, "## What worked before") || !strings.Contains(s, `"aiyo app error, got other account?"`) {
+		t.Fatalf("examples missing:\n%s", s)
+	}
+	if strings.Index(s, "What worked before") > strings.Index(s, "Rules you always follow") {
+		t.Error("examples must come before the rules so the rules have the last word")
+	}
+}
+
+func TestTypingStyleChineseFirst(t *testing.T) {
+	zh := json.RawMessage(`{"zh":0.65,"en":0.25,"ms":0.1}`)
+	manglish := json.RawMessage(`{"en":0.6,"yue":0.25,"ms":0.15}`)
+	if !strings.Contains(TypingStyleMix(GroupChinese, 38, zh), "Chinese is your main language") {
+		t.Error("Mandarin-first persona must get the Chinese-script line")
+	}
+	if strings.Contains(TypingStyleMix(GroupChinese, 26, manglish), "Chinese is your main language") {
+		t.Error("English-first Chinese persona must not")
+	}
+	if strings.Contains(TypingStyleMix(GroupMalay, 40, zh), "Chinese is your main language") {
+		t.Error("only the Chinese pack gets it")
+	}
+}

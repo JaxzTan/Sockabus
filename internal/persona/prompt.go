@@ -34,6 +34,10 @@ type Situation struct {
 	NoIgnore bool          // they ignored the previous message; must answer now
 	WasAway  bool          // they said "brb" last time and were away
 	LateBy   time.Duration // how long the scammer has been waiting; > LongGap → open casually
+
+	// Similar: how our side answered similar messages in other chats that got payment details
+	// (internal/rag). Our own sanitised replies only, never scammer text (TRD §7).
+	Similar []string
 }
 
 // LongGap is how long a scammer must have waited before the persona opens casually instead of
@@ -109,6 +113,19 @@ func describeGot(got []Extracted) string {
 	return b.String()
 }
 
+// describeSimilar renders retrieved past replies, or "" when there are none.
+func describeSimilar(replies []string) string {
+	if len(replies) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## What worked before\nIn other chats, when a stranger wrote something like their last message, these replies kept them talking until they gave payment details. They are about other people, not this chat: take the idea (how to stall, what to ask), say it in your own voice, never copy them.\n")
+	for _, r := range replies {
+		fmt.Fprintf(&b, "- %q\n", r)
+	}
+	return b.String()
+}
+
 var languageNames = map[string]string{
 	"en": "English", "ms": "Bahasa Melayu", "zh": "Mandarin", "yue": "Cantonese", "nan": "Hokkien",
 	"hak": "Hakka", "ta": "Tamil", "manglish": "Manglish",
@@ -158,7 +175,7 @@ func SystemPrompt(p Profile, s Situation) string {
 		}
 		fmt.Fprintf(&b, "## Languages\nYou mix: %s. Code-switch naturally the way Malaysians text.\n", DescribeLanguages(p.LanguageMix))
 	}
-	if style := TypingStyle(GroupFor(p.Ethnicity, p.LanguageMix), p.Age); style != "" {
+	if style := TypingStyleMix(GroupFor(p.Ethnicity, p.LanguageMix), p.Age, p.LanguageMix); style != "" {
 		b.WriteString("\n\n" + strings.TrimSpace(style))
 	}
 
@@ -182,6 +199,7 @@ func SystemPrompt(p Profile, s Situation) string {
 		fmt.Fprintf(&b, "- Tone example for this moment (do not copy it word for word): %q\n", s.Stage.Example)
 	}
 	b.WriteString(describeGot(s.Got))
+	b.WriteString(describeSimilar(s.Similar))
 	switch {
 	case s.WasAway:
 		b.WriteString("- You were away for a while (you said you had to go). Acknowledge it first, casually and briefly, e.g. \"sorry just now driving\".\n")

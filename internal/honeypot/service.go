@@ -26,6 +26,7 @@ import (
 	"github.com/JaxzTan/Buru_AI/internal/gateway"
 	"github.com/JaxzTan/Buru_AI/internal/llm"
 	"github.com/JaxzTan/Buru_AI/internal/msgcrypt"
+	"github.com/JaxzTan/Buru_AI/internal/rag"
 	"github.com/JaxzTan/Buru_AI/internal/workflows"
 )
 
@@ -63,6 +64,7 @@ type Service struct {
 	Temporal   client.Client
 	Senders    *gateway.Registry
 	Sim        gateway.Sender // dev-only simulated channel (internal/channel/sim); nil when disabled
+	RAG        *rag.Index     // past successful replies for the persona prompt; nil = off (SOCKABUS_RAG=0)
 	Cfg        Config
 	Log        *slog.Logger
 	Now        func() time.Time

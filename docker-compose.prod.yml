@@ -30,6 +30,8 @@ services:
   web:
     restart: unless-stopped
     ports: !reset []
+    environment:
+      SOCKABUS_ENV: prod # web/src/lib/auth.ts ignores SOCKABUS_CONSOLE_AUTH=off in prod
 
   caddy:
     container_name: caddy

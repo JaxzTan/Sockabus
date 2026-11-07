@@ -96,3 +96,21 @@ DELETE FROM persona_playbooks WHERE persona_id = $1;
 
 -- name: GetPlaybook :one
 SELECT * FROM playbooks WHERE id = $1;
+
+-- name: ListRAGMessages :many
+-- Every message of conversations where the persona got a bank account or wallet out of the
+-- scammer since sqlc.arg(since), in chat order, with the persona's profile so retrieval can prefer
+-- personas of the same community. Feeds the in-memory reply retrieval index (internal/rag).
+SELECT m.id, m.conversation_id, m.direction, m.sender_type, m.body_ciphertext, m.dek_ref, m.sent_at,
+       c.scam_type, a.persona_id, p.profile, p.language_mix
+FROM messages m
+JOIN conversations c ON c.id = m.conversation_id
+JOIN honeypot_accounts a ON a.id = c.account_id
+JOIN personas p ON p.id = a.persona_id
+WHERE m.conversation_id IN (
+    SELECT s.conversation_id FROM entity_sightings s
+    JOIN entities e ON e.id = s.entity_id
+    WHERE e.type IN ('bank_account', 'wallet') AND e.status <> 'rejected' AND s.extracted_at >= sqlc.arg(since)
+)
+ORDER BY m.conversation_id, m.sent_at, m.id
+LIMIT sqlc.arg(row_limit);
