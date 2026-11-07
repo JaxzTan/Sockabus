@@ -10,7 +10,9 @@ import { summaryTime, useAISummary, useStageHistory } from "@/lib/summary";
 import { USE_SAMPLE } from "@/lib/store";
 import type { Conversation } from "@/lib/types";
 
+// "active" = still running (bot or operator); it is what the page opens on.
 const FILTERS: [string, string][] = [
+  ["active", "Active"],
   ["all", "All"],
   ["bot", "Bot"],
   ["operator", "Operator"],
@@ -22,10 +24,11 @@ export function ConversationsView() {
   const q = useQuery();
   const ago = useAgo();
   const params = useParams<{ id?: string[] }>();
-  const f = q.get("status", "all");
-  const list = data.convos.filter((c) => f === "all" || c.status === f);
-  const c = data.convos.find((x) => x.id === params.id?.[0]) ?? data.convos[0];
-  const qs = f === "all" ? "" : `?status=${f}`;
+  const f = q.get("status", "active");
+  const list = data.convos.filter((c) => f === "all" || (f === "active" ? c.status !== "closed" : c.status === f));
+  // No id in the URL: open the first chat of the current tab, so Active never opens a closed chat.
+  const c = data.convos.find((x) => x.id === params.id?.[0]) ?? list[0];
+  const qs = f === "active" ? "" : `?status=${f}`;
 
   return (
     <>
@@ -43,7 +46,7 @@ export function ConversationsView() {
         <div className="list">
           <div className="tabs" role="group" aria-label="Filter by status">
             {FILTERS.map(([k, l]) => (
-              <button key={k} aria-pressed={f === k} onClick={() => q.set({ status: k })}>
+              <button key={k} aria-pressed={f === k} onClick={() => q.set({ status: k === "active" ? null : k }, "/conversations")}>
                 {l}
               </button>
             ))}
@@ -74,7 +77,7 @@ export function ConversationsView() {
           ) : (
             <div className="card empty">
               <b>Nothing here</b>
-              <span>No {f} conversations right now.</span>
+              <span>{f === "all" ? "No conversations yet." : `No ${(FILTERS.find(([k]) => k === f)?.[1] ?? f).toLowerCase()} conversations right now.`}</span>
             </div>
           )}
         </div>
