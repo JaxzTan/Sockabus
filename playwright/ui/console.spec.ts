@@ -62,15 +62,25 @@ test("e. bank simulator: a verified scam account is held, a clean account is sen
     await page.getByTestId("transfer-btn").click();
     const res = await lookup;
     expect(res.status()).toBe(200);
-    const body = (await res.json()) as { res: { match: boolean; confidence: string; sightings: number }; ms: number };
-    expect(body.res).toMatchObject({ match: true, confidence: "high" });
+    const body = (await res.json()) as { res: { match: boolean; confidence: string; sightings: number; risk_score: number }; ms: number };
+    expect(body.res).toMatchObject({ match: true, confidence: "high", recommended_action: "HOLD_FOR_REVIEW", reason: "ACCOUNT_SUPPLIED_BY_SCAMMER" });
 
     const held = page.getByTestId("result-held");
     await expect(held).toBeVisible();
     await expect(held).toContainText("Transfer held");
     await expect(held).toContainText("High · human-verified");
     await expect(held).toContainText(`${body.ms} ms`);
+    await expect(page.getByTestId("held-score")).toContainText(body.res.risk_score.toFixed(2));
+    await expect(page.getByTestId("held-action")).toContainText("Hold for review");
+    // Evidence from the real chat, with the account number masked everywhere on the page.
+    await expect(page.getByTestId("bank-evidence")).toContainText(`${account.slice(0, 4)}xxxx`);
     await expect(page.getByTestId("bank-why")).toContainText("Verified by an operator");
+    expect(await page.locator("main").innerText(), "the scam account number is never shown unmasked").not.toContain(account);
+    // The held transfer waits in the fraud console for a person; confirming it counts as prevented.
+    const item = page.getByTestId("queue-item").filter({ hasText: `${account.slice(0, 4)}xxxx` }).first();
+    await expect(item).toBeVisible();
+    await item.getByTestId("hold-confirm").click();
+    await expect(item).toContainText("hold confirmed");
   });
 
   await test.step("transfer to a clean account: sent", async () => {
@@ -84,6 +94,56 @@ test("e. bank simulator: a verified scam account is held, a clean account is sen
     await expect(sent).toBeVisible();
     await expect(sent).toContainText("Transfer sent");
     await expect(page.getByTestId("result-held")).toHaveCount(0);
+  });
+});
+
+test("h. bank story: flagged before anyone pays, held with evidence, a person decides", async ({ page }) => {
+  await test.step("open the bank simulator and start the story fresh", async () => {
+    await signIn(page, "/demo/bank");
+    await page.getByTestId("story-reset").click();
+    await expect(page.getByTestId("outcome-prevented")).toHaveText("RM 0.00");
+  });
+
+  await test.step("1. extraction: the scripted chat flags the fake DemoBank account", async () => {
+    await page.getByTestId("story-play").click();
+    await expect(page.getByTestId("story-flagged")).toContainText("Sockabus flagged DemoBank 0000xxxx");
+    await expect(page.getByTestId("story-step-1")).toContainText("✓");
+  });
+
+  await test.step("2. not public yet: the mock public check has no reports", async () => {
+    await page.getByTestId("story-public-check").click();
+    await expect(page.getByTestId("public-check-result")).toContainText("No reports found");
+  });
+
+  await test.step("3-4. the victim pays: held, with an explained response and masked evidence", async () => {
+    await page.getByTestId("story-fill").click();
+    await expect(page.getByTestId("bank-select")).toHaveValue("DEMO");
+    await page.getByTestId("transfer-btn").click();
+    const held = page.getByTestId("result-held");
+    await expect(held).toBeVisible();
+    await expect(held).toContainText("Transfer held for review");
+    await expect(held).toContainText("Scripted demo response");
+    await expect(page.getByTestId("held-score")).toContainText("0.94");
+    await expect(page.getByTestId("held-action")).toContainText("HOLD_FOR_REVIEW");
+    await expect(page.getByTestId("bank-evidence")).toContainText("bank in to this acc first, DemoBank 0000xxxx");
+    await expect(page.getByTestId("bank-json")).toContainText('"recommended_action": "HOLD_FOR_REVIEW"');
+  });
+
+  await test.step("5. the bank decides: same bank, so the console can also review the mule account", async () => {
+    const item = page.getByTestId("queue-item").filter({ hasText: "story" }).first();
+    await expect(item).toContainText("RM 2,500.00");
+    await item.getByTestId("mule-freeze").click();
+    await expect(item.getByTestId("mule-status")).toContainText("Freeze requested");
+    await item.getByTestId("hold-confirm").click();
+    await expect(item).toContainText("hold confirmed");
+  });
+
+  await test.step("6. outcome: RM prevented and the head start over the first victim report", async () => {
+    await expect(page.getByTestId("outcome-prevented")).toHaveText("RM 2,500.00");
+    await expect(page.getByTestId("outcome-lead")).toHaveText("47 min");
+    for (let i = 1; i <= 6; i++) await expect(page.getByTestId(`story-step-${i}`)).toContainText("✓");
+    // No unmasked account number anywhere on the page outside the input.
+    expect(await page.locator("main").innerText()).not.toMatch(/\d{6,}/);
   });
 });
 

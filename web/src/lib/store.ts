@@ -25,7 +25,9 @@ import {
   type ApiLookupResult,
   type ApiPersona,
 } from "./api";
-import { clock, digits, groupAcct, showVal, today, typeLabel } from "./format";
+import { clock, digits, groupAcct, maskDigits, showVal, today, typeLabel } from "./format";
+import { flagStoryAccount, getBankDemo, recordHeld, resetBankDemo } from "./bankDemo";
+import { isStoryAccount, STORY_BANK, storyResponse } from "./bankStory";
 import { GENERATED, SEED_CONVOS, SEED_ENTITIES, SEED_PERSONAS } from "./seed";
 import { classify, extract, lookup, personaReply } from "./sim";
 import type { BankDraft, Conversation, Entity, Lookup, PersonaStatus } from "./types";
@@ -639,6 +641,7 @@ async function apiLookup() {
     const r = await api<ApiLookupResult>("/demo/lookup", { body: { bank, account: acct } });
     setData((x) => ({ ...x, lastLookup: { result: r.res.match ? "held" : "sent", entityId: null, res: r.res, bank: x.bank.bank, acct: digits(acct), amt: x.bank.amt, ms: r.ms } }));
     countLookup(r.res.match);
+    noteHeld();
   } catch (err) {
     setData((x) => ({ ...x, lastLookup: null }));
     setUI({ lookupError: errMsg(err) });
@@ -648,6 +651,8 @@ async function apiLookup() {
 }
 
 export function runLookup() {
+  const b = get().data.bank;
+  if (isStoryAccount(b.bank, digits(b.acct))) return storyLookup();
   if (!USE_SAMPLE) return void apiLookup();
   setUI({ checking: true });
   setTimeout(() => {
@@ -655,8 +660,39 @@ export function runLookup() {
     const r = lookup(d.entities, d.bank.bank, d.bank.acct);
     setData((x) => ({ ...x, lastLookup: { ...r, bank: x.bank.bank, acct: digits(x.bank.acct), amt: x.bank.amt } }));
     countLookup(r.result === "held");
+    noteHeld();
     setUI({ checking: false });
   }, 650);
+}
+
+// The bank story's fake DemoBank account is answered here from scripted data built with the live
+// API's rules (./risk), in both modes: it is never sent to Sockabus, so no fake record is needed there.
+function storyLookup() {
+  setUI({ checking: true, lookupError: null });
+  setTimeout(() => {
+    flagStoryAccount(); // a transfer before step 1 still tells the story: Sockabus flagged it first
+    const res = storyResponse(getBankDemo().flaggedAt ?? Date.now());
+    setData((x) => ({ ...x, lastLookup: { result: "held", entityId: null, res, bank: x.bank.bank, acct: digits(x.bank.acct), amt: x.bank.amt, ms: 38, scripted: true } }));
+    countLookup(true);
+    noteHeld();
+    setUI({ checking: false });
+  }, 450);
+}
+
+// A held transfer goes to the mock fraud console's review queue (a person decides; never auto-frozen).
+function noteHeld() {
+  const L = get().data.lastLookup;
+  if (L?.result !== "held") return;
+  const amt = parseFloat(L.amt.replace(/[^\d.]/g, "")) || 0;
+  recordHeld({
+    bank: L.bank,
+    acctMasked: maskDigits(L.acct ?? ""),
+    amt,
+    score: L.res.risk_score ?? 0,
+    action: L.res.recommended_action ?? "HOLD_FOR_REVIEW",
+    story: !!L.scripted,
+    sameBank: L.bank === STORY_BANK,
+  });
 }
 
 export function cancelTransfer() {
@@ -671,6 +707,7 @@ export function toggleTelegram() {
 }
 
 export function resetDemo() {
+  resetBankDemo(); // the bank simulator's mock fraud console and story progress (this browser only)
   if (!USE_SAMPLE) {
     // Server data stays. Send waiting decisions (never lose one), then clear this browser's demo state.
     flushDecisions();
