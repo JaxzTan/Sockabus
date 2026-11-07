@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -22,6 +23,25 @@ type Server struct {
 	demo  *demostore.Store // optional: live demo data
 	eng   *engine.Engine
 	live  *liveAPI // SOCKABUS_MODE=live: PostgreSQL-backed API (takes precedence over demo)
+
+	demoToken string // guards POST /internal/auth/google/check in demo mode; empty refuses every call
+
+	temporal func(context.Context) error // readyz check; nil skips it
+
+	corsOrigins []string // SOCKABUS_CORS_ORIGINS; empty sends no CORS headers
+	noRateLimit bool     // SOCKABUS_RATE_LIMIT=off (load tests only)
+}
+
+// WithCORS allows cross-origin browser calls from exactly these origins ("*" is ignored).
+func (s *Server) WithCORS(origins []string) *Server {
+	s.corsOrigins = origins
+	return s
+}
+
+// WithoutRateLimit turns the per-client rate limits off. For load tests only.
+func (s *Server) WithoutRateLimit() *Server {
+	s.noRateLimit = true
+	return s
 }
 
 // WithLive serves the PostgreSQL-backed operator API (/internal/*) and lookup (/v1/lookup).
@@ -40,6 +60,20 @@ func (s *Server) WithSim(hub *sim.Hub) *Server {
 	return s
 }
 
+// WithStatus sets what GET /internal/status reports. Call after WithLive.
+func (s *Server) WithStatus(src StatusSources) *Server {
+	if s.live != nil {
+		s.live.src = src
+	}
+	return s
+}
+
+// WithTemporalCheck adds Temporal to /readyz.
+func (s *Server) WithTemporalCheck(check func(context.Context) error) *Server {
+	s.temporal = check
+	return s
+}
+
 func New(db *pgxpool.Pool, rdb *redis.Client) *Server {
 	return &Server{db: db, redis: rdb}
 }
@@ -55,6 +89,13 @@ func (s *Server) WithDemo(st *demostore.Store) *Server {
 	return s
 }
 
+// WithOperatorToken sets the bearer token demo mode requires on POST /internal/auth/google/check
+// (the console's Google sign-in allowlist). Live mode uses the token given to WithLive.
+func (s *Server) WithOperatorToken(token string) *Server {
+	s.demoToken = token
+	return s
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
@@ -63,12 +104,29 @@ func (s *Server) Routes() http.Handler {
 	case s.live != nil:
 		s.live.register(mux)
 	case s.demo != nil:
-		s.registerDemo(mux)
+		demoMux := http.NewServeMux()
+		s.registerDemo(demoMux)
+		if s.demoToken != "" {
+			// With an operator token set, demo mode guards its API like live mode does: the Next.js
+			// /api proxy adds the token, so only the signed-in console (and holders of the token) get in.
+			mux.Handle("/v1/", (&liveAPI{token: s.demoToken}).auth(demoMux.ServeHTTP))
+			mux.Handle("/internal/", (&liveAPI{token: s.demoToken}).auth(demoMux.ServeHTTP))
+		} else {
+			slog.Warn("demo mode without SOCKABUS_OPERATOR_TOKEN: /v1/* and /internal/* are unauthenticated (local use only)")
+			mux.Handle("/v1/", demoMux)
+			mux.Handle("/internal/", demoMux)
+		}
+		mux.Handle("POST /internal/auth/google/check", (&liveAPI{token: s.demoToken}).auth(googleCheck))
 	}
-	return mux
+	var h http.Handler = mux
+	if !s.noRateLimit {
+		h = newRateLimiter().middleware(h)
+	}
+	return securityHeaders(cors(s.corsOrigins, h))
 }
 
-// healthz reports that the process is alive.
+// healthz reports that the process is alive. It checks no dependencies, so a database or
+// Temporal outage never gets the process restarted; /readyz covers those.
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -80,13 +138,24 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 
 	checks := map[string]string{"postgres": "ok", "redis": "ok"}
 	status := http.StatusOK
-	if err := s.db.Ping(ctx); err != nil {
-		checks["postgres"] = err.Error()
+	// /readyz is public (Caddyfile): report only "unavailable", never the error, which can carry
+	// hostnames, ports or connection-string details. The cause goes to the server log.
+	down := func(name string, err error) {
+		slog.Warn("readyz: dependency unavailable", "dependency", name, "err", err)
+		checks[name] = "unavailable"
 		status = http.StatusServiceUnavailable
 	}
+	if err := s.db.Ping(ctx); err != nil {
+		down("postgres", err)
+	}
 	if err := s.redis.Ping(ctx).Err(); err != nil {
-		checks["redis"] = err.Error()
-		status = http.StatusServiceUnavailable
+		down("redis", err)
+	}
+	if s.temporal != nil {
+		checks["temporal"] = "ok"
+		if err := s.temporal(ctx); err != nil {
+			down("temporal", err)
+		}
 	}
 	writeJSON(w, status, checks)
 }

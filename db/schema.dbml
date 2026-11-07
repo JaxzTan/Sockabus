@@ -1,30 +1,109 @@
-// Unknown — Scam Intelligence Network
-// Schema per TRD v0.3 (23 Oct 2026), section 4. Regenerate from migrations with db2dbml once they exist (G-6)
-// Paste into https://dbdiagram.io/d
+// Sockabus — Scam Intelligence Network
+// Synced 4 Nov 2026 against db/migrations 000001–000014, applied to a scratch postgres:16 and read back
+// from pg_catalog. db/migrations-pending/* (000015 drop_plaintext_identifiers) is NOT applied here.
+// Paste into https://dbdiagram.io/d (or use db/schema.dbdiagram.txt, same content).
+//
+// DBML cannot express these; they live in the migrations:
+//   - partial indexes (WHERE ...)          -> written as [note: 'WHERE ...'] on the index
+//   - DESC index columns                   -> noted on the index
+//   - UNIQUE NULLS NOT DISTINCT (uq_entity)
+//   - triggers, functions, roles, RLS      -> see the "Database objects" note at the bottom
 
-Project unknown {
+Project sockabus {
   database_type: 'PostgreSQL'
-  Note: 'PostgreSQL 15+. All timestamps timestamptz (UTC). messages, entity_sightings and verifications are append-only (NFR-8).'
+  Note: '''
+PostgreSQL 15+. All timestamps timestamptz (UTC).
+Append-only (NFR-8, trigger buru_forbid_mutation on UPDATE/DELETE/TRUNCATE): messages, entity_sightings,
+verifications, conversation_summaries, persona_summaries, overview_summaries, conversation_stage_events,
+account_health_events, retention_purges.
+RLS enabled on every public table (000014) with one allow-all policy buru_app_all TO buru_app; grants stay the real permission model.
+'''
 }
 
 // ─────────────── Enums ───────────────
 
-Enum operator_role { operator admin }
-Enum persona_status { draft active paused retired }
-Enum channel { telegram whatsapp }
-Enum account_status { active banned cooldown }
-Enum scam_type { job investment romance parcel impersonation loan other }
-Enum conversation_status { bot human closed }
-Enum message_direction { inbound outbound }
-Enum sender_type { scammer persona operator }
-Enum entity_type { bank_account wallet phone url handle }
-Enum entity_status { unverified verified rejected }
-Enum confidence_level { low medium high }
-Enum verification_decision { verified rejected }
-Enum chain { tron ethereum }
-Enum customer_type { bank ewallet exchange }
-Enum key_status { active revoked }
-Enum delivery_status { pending delivered failed }
+Enum operator_role {
+  operator
+  admin
+}
+Enum persona_status {
+  draft
+  active
+  paused
+  retired
+}
+Enum channel {
+  telegram
+  whatsapp
+  webchat
+}
+Enum account_status {
+  active
+  banned
+  cooldown
+}
+Enum scam_type {
+  job
+  investment
+  romance
+  parcel
+  impersonation
+  loan
+  other
+}
+Enum conversation_status {
+  bot
+  human
+  closed
+}
+Enum message_direction {
+  inbound
+  outbound
+}
+Enum sender_type {
+  scammer
+  persona
+  operator
+}
+Enum entity_type {
+  bank_account
+  wallet
+  phone
+  url
+  handle
+}
+Enum entity_status {
+  unverified
+  verified
+  rejected
+}
+Enum confidence_level {
+  low
+  medium
+  high
+}
+Enum verification_decision {
+  verified
+  rejected
+}
+Enum chain {
+  tron
+  ethereum
+}
+Enum customer_type {
+  bank
+  ewallet
+  exchange
+}
+Enum key_status {
+  active
+  revoked
+}
+Enum delivery_status {
+  pending
+  delivered
+  failed
+}
 
 // ─────────────── Operators (internal) ───────────────
 
@@ -49,6 +128,10 @@ Table personas {
   status persona_status [not null, default: 'draft']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
+  profile jsonb [note: '000004: generator profile']
+  demo_identifiers jsonb [note: '000004: masked demo values; plaintext copy, NULL after pending 000016 drop_plaintext_identifiers']
+  demo_identifiers_ciphertext bytea [note: '000012: AES-GCM, AAD "persona_demo_ids:<id>"']
+  demo_identifiers_dek_ref varchar(255) [note: '000012: key ref (local:v1). CHECK personas_demo_identifiers_dek_ref_ck: set iff ciphertext is']
 }
 
 Table persona_prompt_versions {
@@ -71,12 +154,15 @@ Table playbooks {
   version int [not null, default: 1]
   stages jsonb [not null, note: 'Ordered stage machine: rapport -> bait -> payment_request -> stall']
   created_at timestamptz [not null, default: `now()`]
+  indexes {
+    (scam_type, version) [unique, name: 'playbooks_scam_type_version_uq']
+  }
   Note: 'TR-4: playbook per scam type'
 }
 
 Table persona_playbooks {
-  persona_id bigint [ref: > personas.id]
-  playbook_id bigint [ref: > playbooks.id]
+  persona_id bigint [not null, ref: > personas.id]
+  playbook_id bigint [not null, ref: > playbooks.id]
   indexes {
     (persona_id, playbook_id) [pk]
   }
@@ -106,16 +192,25 @@ Table conversations {
   account_id bigint [not null, ref: > honeypot_accounts.id]
   playbook_id bigint [ref: > playbooks.id]
   temporal_workflow_id varchar(128) [not null, unique]
-  scammer_handle varchar(255) [not null]
+  scammer_handle varchar(255) [note: 'Plaintext copy (nullable since 000012); NULL after pending 000016']
   scam_type scam_type [note: 'Null until classifier runs (TR-7)']
   stage varchar(32) [not null, default: 'rapport']
   status conversation_status [not null, default: 'bot']
   started_at timestamptz [not null]
   last_message_at timestamptz
   closed_at timestamptz
+  archived_at timestamptz [note: '000015: unused since the /archive page was removed (test chats are closed instead); safe to drop']
+  scammer_peer_ref varchar(255) [note: '000004: Telegram "tg:user:<id>:<access_hash>"; plaintext copy, NULL after pending 000016']
+  scammer_handle_ciphertext bytea [note: '000012: AES-GCM, AAD "conv_handle:acct:<account_id>"']
+  scammer_peer_ref_ciphertext bytea [note: '000012: AES-GCM, AAD "conv_peer_ref:acct:<account_id>"']
+  scammer_peer_ref_bidx bytea [note: '000012: HMAC-SHA256 blind index, 32 bytes (CHECK octet_length = 32), key = HKDF(SOCKABUS_MESSAGE_KEY, "sockabus/blind-index/v1"). CHECK: set iff scammer_peer_ref_ciphertext is']
+  identifiers_dek_ref varchar(255) [note: '000012: key ref of the two ciphertexts. CHECK: NOT NULL when either ciphertext is set']
   indexes {
-    (account_id, scammer_handle)
+    (account_id, scammer_handle) [note: 'dropped by pending 000016']
     (status, last_message_at)
+    (account_id, scammer_peer_ref) [name: 'conversations_open_peer_idx', note: '000004. WHERE status <> closed. Dropped by pending 000016']
+    (account_id, scammer_peer_ref) [unique, name: 'conversations_open_peer_uq', note: '000006. WHERE status <> closed. Dropped by pending 000016']
+    (account_id, scammer_peer_ref_bidx) [unique, name: 'conversations_open_peer_bidx_uq', note: '000012. WHERE status <> closed AND scammer_peer_ref_bidx IS NOT NULL']
   }
 }
 
@@ -124,14 +219,17 @@ Table messages {
   conversation_id bigint [not null, ref: > conversations.id]
   direction message_direction [not null]
   sender_type sender_type [not null]
-  operator_id bigint [ref: > operators.id, note: 'Set when an operator sent it after takeover']
+  operator_id bigint [ref: > operators.id, note: 'CHECK messages_operator_id_ck: set iff sender_type = operator']
   body_ciphertext bytea [not null, note: 'Envelope-encrypted (TR-14)']
   dek_ref varchar(255) [not null, note: 'Wrapped data key reference']
   sent_at timestamptz [not null]
+  dedupe_key varchar(128) [note: '000004: idempotent ingest. Inbound "tg:<account_id>:<peer_id>:<message_id>", outbound "out:<conversation_id>:<random_id>"']
   indexes {
     (conversation_id, sent_at)
+    dedupe_key [unique, name: 'messages_dedupe_key_uq']
+    (id, conversation_id) [unique, name: 'messages_id_conversation_uq', note: '000005: target of entity_sightings composite FK']
   }
-  Note: 'APPEND-ONLY'
+  Note: 'APPEND-ONLY. CHECK messages_direction_sender_ck: sender_type = scammer <=> direction = inbound'
 }
 
 // ─────────────── Intelligence ───────────────
@@ -140,15 +238,16 @@ Table entities {
   id bigint [pk, increment]
   type entity_type [not null]
   value_normalized varchar(512) [not null]
-  bank_or_chain varchar(32) [note: 'Bank code (MBB, CIMB...) or chain; NULL when not applicable. uq_entity is UNIQUE NULLS NOT DISTINCT (set in migration; DBML cannot express it)']
+  bank_or_chain varchar(32) [note: 'Bank code (MBB, CIMB...) or chain, written UPPER CASE; NULL when not applicable']
   confidence confidence_level [not null, default: 'low']
   status entity_status [not null, default: 'unverified']
   sightings_count int [not null, default: 0, note: 'Denormalised for fast lookup response']
   first_seen timestamptz [not null]
   last_seen timestamptz [not null]
   indexes {
-    (type, value_normalized, bank_or_chain) [unique, name: 'uq_entity']
+    (type, value_normalized, bank_or_chain) [unique, name: 'uq_entity', note: 'UNIQUE NULLS NOT DISTINCT']
     (status, last_seen)
+    (type, value_normalized, `upper(bank_or_chain)`) [name: 'entities_type_value_bank_upper_idx', note: '000007']
   }
 }
 
@@ -162,7 +261,7 @@ Table entity_sightings {
     (entity_id, message_id) [unique]
     conversation_id
   }
-  Note: 'APPEND-ONLY audit trail (NFR-8). Many-to-many entities <-> conversations'
+  Note: 'APPEND-ONLY audit trail (NFR-8). Many-to-many entities <-> conversations. Composite FK (message_id, conversation_id) -> messages(id, conversation_id) keeps the sighting on the right conversation.'
 }
 
 Table verifications {
@@ -188,7 +287,7 @@ Table chain_transfers {
   from_wallet varchar(128) [not null]
   to_wallet varchar(128) [not null]
   amount decimal(38,18) [not null]
-  hop smallint [not null, note: '1 or 2 (TR-8)']
+  hop smallint [not null, note: 'CHECK hop IN (1, 2) (TR-8)']
   to_label varchar(128) [note: 'e.g. Binance deposit']
   ts timestamptz [not null]
   indexes {
@@ -228,6 +327,9 @@ Table api_keys {
   rate_limit_per_min int [not null, default: 600]
   created_at timestamptz [not null, default: `now()`]
   revoked_at timestamptz
+  indexes {
+    (id, customer_id) [unique, name: 'api_keys_id_customer_uq', note: 'target of lookup_logs composite FK']
+  }
 }
 
 Table lookup_logs {
@@ -241,7 +343,7 @@ Table lookup_logs {
   indexes {
     (customer_id, ts)
   }
-  Note: 'Usage + billing (FR-13). Does not store the looked-up value.'
+  Note: 'Usage + billing (FR-13). Does not store the looked-up value. Composite FK (api_key_id, customer_id) -> api_keys(id, customer_id): a key can only log against its own customer.'
 }
 
 Table webhook_deliveries {
@@ -260,4 +362,179 @@ Table webhook_deliveries {
     (status)
   }
   Note: 'TR-12 delivery log'
+}
+
+// ─────────────── Summaries & stage history (000008, sealed in 000011) ───────────────
+
+Table conversation_summaries {
+  id bigint [pk, increment]
+  conversation_id bigint [not null, ref: > conversations.id]
+  summary text [note: 'Plaintext, pre-000011 rows only. CHECK: summary or summary_ciphertext is set']
+  stage varchar(32) [not null]
+  scam_type scam_type
+  model varchar(100) [not null]
+  message_count_at int [not null]
+  reason varchar(16) [not null, default: 'on_demand', note: 'CHECK IN (stage_change, every_n, on_demand)']
+  created_at timestamptz [not null, default: `now()`]
+  summary_ciphertext bytea [note: '000011: AES-GCM, AAD "conv_summary:<conversation_id>"']
+  dek_ref varchar(255) [note: '000011: key ref; CHECK set iff summary_ciphertext is']
+  indexes { (conversation_id, created_at) [note: 'created_at DESC'] }
+  Note: 'APPEND-ONLY'
+}
+
+Table persona_summaries {
+  id bigint [pk, increment]
+  persona_id bigint [not null, ref: > personas.id]
+  summary text [note: 'Plaintext, pre-000011 rows only. CHECK: summary or summary_ciphertext is set']
+  model varchar(100) [not null]
+  conversation_count_at int [not null]
+  reason varchar(16) [not null, default: 'on_demand', note: 'CHECK IN (stage_change, every_n, on_demand)']
+  created_at timestamptz [not null, default: `now()`]
+  summary_ciphertext bytea [note: '000011: AES-GCM, AAD "persona_summary:<persona_id>"']
+  dek_ref varchar(255) [note: '000011: key ref; CHECK set iff summary_ciphertext is']
+  indexes { (persona_id, created_at) [note: 'created_at DESC'] }
+  Note: 'APPEND-ONLY'
+}
+
+Table overview_summaries {
+  id bigint [pk, increment]
+  summary text [note: 'Plaintext, pre-000011 rows only. CHECK: summary or summary_ciphertext is set']
+  model varchar(100) [not null]
+  active_personas int [not null]
+  active_conversations int [not null]
+  created_at timestamptz [not null, default: `now()`]
+  summary_ciphertext bytea [note: '000011: AES-GCM, AAD "overview_summary"']
+  dek_ref varchar(255) [note: '000011: key ref; CHECK set iff summary_ciphertext is']
+  indexes { (created_at) [note: 'DESC'] }
+  Note: 'APPEND-ONLY'
+}
+
+Table conversation_stage_events {
+  id bigint [pk, increment]
+  conversation_id bigint [not null, ref: > conversations.id]
+  from_stage varchar(32)
+  to_stage varchar(32) [not null]
+  from_scam_type scam_type
+  scam_type scam_type
+  source varchar(16) [not null, note: 'CHECK IN (bot, operator, classifier)']
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (conversation_id, created_at, id) }
+  Note: 'APPEND-ONLY'
+}
+
+// ─────────────── Billing (000009) ───────────────
+
+Table plans {
+  id bigint [pk, increment]
+  code varchar(32) [not null, unique]
+  name varchar(100) [not null]
+  monthly_price numeric(12,2) [not null, note: 'CHECK >= 0']
+  currency char(3) [not null, default: 'MYR']
+  included_lookups int [not null, default: 0, note: 'CHECK >= 0']
+  overage_price numeric(12,4) [not null, default: 0, note: 'per lookup above included_lookups; CHECK >= 0']
+  active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+}
+
+Table customer_subscriptions {
+  id bigint [pk, increment]
+  customer_id bigint [not null, ref: > customers.id]
+  plan_id bigint [not null, ref: > plans.id]
+  period_start timestamptz [not null]
+  period_end timestamptz [not null, note: 'CHECK period_end > period_start']
+  status varchar(16) [not null, default: 'active', note: 'CHECK IN (trialing, active, past_due, cancelled, expired)']
+  created_at timestamptz [not null, default: `now()`]
+  cancelled_at timestamptz
+  indexes {
+    (customer_id, period_start) [name: 'customer_subscriptions_customer_idx', note: 'period_start DESC']
+    customer_id [unique, name: 'customer_subscriptions_live_uq', note: 'WHERE status IN (trialing, active, past_due): one live subscription per customer']
+  }
+}
+
+Table invoices {
+  id bigint [pk, increment]
+  customer_id bigint [not null, ref: > customers.id]
+  subscription_id bigint [ref: > customer_subscriptions.id]
+  period_start timestamptz [not null]
+  period_end timestamptz [not null, note: 'CHECK period_end > period_start']
+  lookup_count int [not null, default: 0, note: 'from lookup_logs; CHECK >= 0']
+  included_lookups int [not null, default: 0]
+  overage_lookups int [not null, default: 0]
+  amount numeric(12,2) [not null, default: 0, note: 'CHECK >= 0']
+  currency char(3) [not null, default: 'MYR']
+  status varchar(16) [not null, default: 'draft', note: 'CHECK IN (draft, issued, paid, void)']
+  issued_at timestamptz
+  paid_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  indexes {
+    (customer_id, period_start) [unique]
+    (status, period_end) [name: 'invoices_status_idx']
+  }
+}
+
+// ─────────────── Telegram state & account health (000010) ───────────────
+
+Table telegram_update_state {
+  account_id bigint [pk, ref: - honeypot_accounts.id]
+  pts int [not null, default: 0]
+  qts int [not null, default: 0]
+  date int [not null, default: 0]
+  seq int [not null, default: 0]
+  updated_at timestamptz [not null, default: `now()`]
+}
+
+Table account_health_events {
+  id bigint [pk, increment]
+  account_id bigint [not null, ref: > honeypot_accounts.id]
+  event varchar(32) [not null, note: 'CHECK IN (connected, disconnected, connect_error, unauthorized, banned, flood_wait, cooldown, active)']
+  detail jsonb
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (account_id, created_at) [note: 'created_at DESC'] }
+  Note: 'APPEND-ONLY'
+}
+
+// ─────────────── Retention (000013) ───────────────
+
+Table retention_purges {
+  id bigint [pk, increment]
+  retention interval [not null, note: 'minimum 12 months (TRD §7)']
+  cutoff timestamptz [not null]
+  dry_run boolean [not null]
+  messages_deleted bigint [not null, default: 0]
+  sightings_deleted bigint [not null, default: 0]
+  summaries_deleted bigint [not null, default: 0]
+  requested_by varchar(255) [not null, note: 'operator or job']
+  db_user varchar(255) [not null, default: `session_user`]
+  created_at timestamptz [not null, default: `now()`]
+  indexes { (created_at) [note: 'DESC'] }
+  Note: 'APPEND-ONLY audit of every purge run (dry or real). buru_app: SELECT only.'
+}
+
+// ─────────────── Composite foreign keys ───────────────
+
+Ref entity_sightings_message_conversation_fk: entity_sightings.(message_id, conversation_id) > messages.(id, conversation_id)
+Ref lookup_logs_api_key_customer_fk: lookup_logs.(api_key_id, customer_id) > api_keys.(id, customer_id)
+
+// ─────────────── Database objects DBML cannot draw ───────────────
+
+Note database_objects {
+'''
+Functions
+- buru_forbid_mutation(): trigger on every APPEND-ONLY table (BEFORE UPDATE OR DELETE, and BEFORE TRUNCATE).
+  DELETE on messages, entity_sightings and the three summary tables is allowed only while
+  buru.allow_purge = 'on', which only buru_purge_expired() sets (transaction-local).
+- buru_purge_expired(retention interval, dry_run bool, requested_by text) RETURNS retention_purges:
+  SECURITY DEFINER, EXECUTE granted to NOLOGIN role buru_purge only (not buru_app, not PUBLIC).
+
+Roles (000002, 000003, 000013)
+- buru_app: application role; login buru_api is a member. anon / authenticated: all access revoked.
+- buru_purge: NOLOGIN, may only run buru_purge_expired().
+
+RLS (000014)
+- ENABLE ROW LEVEL SECURITY on every public table; policy buru_app_all FOR ALL TO buru_app USING (true).
+
+Pending (db/migrations-pending, not applied)
+- 000015 drop_plaintext_identifiers: NULLs conversations.scammer_handle / scammer_peer_ref and
+  personas.demo_identifiers, adds CHECKs against plaintext, drops the plaintext indexes.
+'''
 }

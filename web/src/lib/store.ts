@@ -25,7 +25,9 @@ import {
   type ApiLookupResult,
   type ApiPersona,
 } from "./api";
-import { clock, digits, groupAcct, showVal, today, typeLabel } from "./format";
+import { clock, digits, groupAcct, maskDigits, showVal, today, typeLabel } from "./format";
+import { acctKey, flagStoryAccount, getBankDemo, recordHeld, resetBankDemo } from "./bankDemo";
+import { isStoryAccount, STORY_BANK, storyResponse } from "./bankStory";
 import { GENERATED, SEED_CONVOS, SEED_ENTITIES, SEED_PERSONAS } from "./seed";
 import { classify, extract, lookup, personaReply } from "./sim";
 import type { BankDraft, Conversation, Entity, Lookup, PersonaStatus } from "./types";
@@ -68,6 +70,13 @@ export interface Health {
   ms: number;
 }
 
+// GET /internal/status (NFR-9): live Telegram connection, recent LLM errors, running workflows.
+export interface BotStatus {
+  telegram: { connected: boolean; last_message_at: string | null };
+  llm: { errors_recent: number };
+  workflows: { running: number | null; error?: string };
+}
+
 interface UI {
   generating: boolean;
   genError: string | null;
@@ -81,6 +90,7 @@ interface UI {
   loadError: string | null; // last API load failed with this message
   accounts: ApiAccount[]; // honeypot accounts (API mode; Status screen)
   health: Health | null;
+  bot: BotStatus | null; // null until loaded, or when /internal/status can't be reached
   justVerified: string | null; // bank account just verified here: drives "Test in bank simulator →"
   saving: Record<string, boolean>; // entity ids whose decision is being sent to the server
   session: SessionStats; // bank simulator, "this demo session" (sessionStorage)
@@ -97,7 +107,7 @@ export interface State {
 }
 
 const seed = (): Data => ({
-  personas: structuredClone(SEED_PERSONAS),
+  personas: structuredClone(SEED_PERSONAS).reverse(), // seed is newest-first; show oldest-first
   convos: structuredClone(SEED_CONVOS),
   entities: structuredClone(SEED_ENTITIES),
   pool: 0,
@@ -125,6 +135,7 @@ const freshUI = (lastSync: number): UI => ({
   loadError: null,
   accounts: [],
   health: null,
+  bot: null,
   justVerified: null,
   saving: {},
   session: { lookups: 0, holds: 0 },
@@ -278,7 +289,7 @@ async function pull() {
     knownEntities = new Set(entities.map((e) => e.id));
     const genIds = get().data.genIds;
     set((s) => ({
-      data: { ...s.data, personas: personas.sort((a, b) => b.id - a.id).map((p) => toPersona(p, accounts, genIds)), convos: mapped, entities },
+      data: { ...s.data, personas: personas.sort((a, b) => a.id - b.id).map((p) => toPersona(p, accounts, genIds)), convos: mapped, entities },
       ui: { ...s.ui, loaded: true, loadError: null, lastSync: Date.now(), accounts, typing },
     }));
   } catch (err) {
@@ -286,8 +297,9 @@ async function pull() {
   }
 }
 
-// GET /readyz: 200 or 503 with { postgres, redis } checks. There is no /internal/status yet.
+// GET /readyz: 200 or 503 with { postgres, redis, temporal } checks; GET /internal/status alongside.
 async function pullHealth() {
+  const botReq = api<BotStatus>("/internal/status").catch(() => null);
   const t0 = performance.now();
   let health: Health;
   try {
@@ -301,7 +313,7 @@ async function pullHealth() {
   } catch {
     health = { ok: false, status: 0, checks: {}, ms: Math.round(performance.now() - t0) };
   }
-  setUI({ health });
+  setUI({ health, bot: await botReq });
 }
 
 let syncStarted = false;
@@ -347,7 +359,7 @@ export async function generatePersona(): Promise<string> {
         const pool = d.pool + 1;
         id = `p_${40 + pool}`;
         const handle = "@" + g.name.toLowerCase().replace(/[^a-z]/g, "").slice(0, 9) + g.age;
-        return { ...d, pool, personas: [{ id, ...g, status: "draft", handle, created: "just now", gen: true }, ...d.personas] };
+        return { ...d, pool, personas: [...d.personas, { id, ...g, status: "draft", handle, created: "just now", gen: true }] };
       });
       setUI({ generating: false });
       resolve(id);
@@ -629,6 +641,7 @@ async function apiLookup() {
     const r = await api<ApiLookupResult>("/demo/lookup", { body: { bank, account: acct } });
     setData((x) => ({ ...x, lastLookup: { result: r.res.match ? "held" : "sent", entityId: null, res: r.res, bank: x.bank.bank, acct: digits(acct), amt: x.bank.amt, ms: r.ms } }));
     countLookup(r.res.match);
+    noteHeld();
   } catch (err) {
     setData((x) => ({ ...x, lastLookup: null }));
     setUI({ lookupError: errMsg(err) });
@@ -638,6 +651,8 @@ async function apiLookup() {
 }
 
 export function runLookup() {
+  const b = get().data.bank;
+  if (isStoryAccount(b.bank, digits(b.acct))) return storyLookup();
   if (!USE_SAMPLE) return void apiLookup();
   setUI({ checking: true });
   setTimeout(() => {
@@ -645,8 +660,40 @@ export function runLookup() {
     const r = lookup(d.entities, d.bank.bank, d.bank.acct);
     setData((x) => ({ ...x, lastLookup: { ...r, bank: x.bank.bank, acct: digits(x.bank.acct), amt: x.bank.amt } }));
     countLookup(r.result === "held");
+    noteHeld();
     setUI({ checking: false });
   }, 650);
+}
+
+// The bank story's fake DemoBank account is answered here from scripted data built with the live
+// API's rules (./risk), in both modes: it is never sent to Sockabus, so no fake record is needed there.
+function storyLookup() {
+  setUI({ checking: true, lookupError: null });
+  setTimeout(() => {
+    flagStoryAccount(); // a transfer before step 1 still tells the story: Sockabus flagged it first
+    const res = storyResponse(getBankDemo().flaggedAt ?? Date.now());
+    setData((x) => ({ ...x, lastLookup: { result: "held", entityId: null, res, bank: x.bank.bank, acct: digits(x.bank.acct), amt: x.bank.amt, ms: 38, scripted: true } }));
+    countLookup(true);
+    noteHeld();
+    setUI({ checking: false });
+  }, 450);
+}
+
+// A held transfer goes to the mock fraud console's review queue (a person decides; never auto-frozen).
+function noteHeld() {
+  const L = get().data.lastLookup;
+  if (L?.result !== "held") return;
+  const amt = parseFloat(L.amt.replace(/[^\d.]/g, "")) || 0;
+  recordHeld({
+    bank: L.bank,
+    acctMasked: maskDigits(L.acct ?? ""),
+    key: acctKey(L.bank, L.acct ?? ""),
+    amt,
+    score: L.res.risk_score ?? 0,
+    action: L.res.recommended_action ?? "HOLD_FOR_REVIEW",
+    story: !!L.scripted,
+    sameBank: L.bank === STORY_BANK,
+  });
 }
 
 export function cancelTransfer() {
@@ -661,6 +708,7 @@ export function toggleTelegram() {
 }
 
 export function resetDemo() {
+  resetBankDemo(); // the bank simulator's mock fraud console and story progress (this browser only)
   if (!USE_SAMPLE) {
     // Server data stays. Send waiting decisions (never lose one), then clear this browser's demo state.
     flushDecisions();

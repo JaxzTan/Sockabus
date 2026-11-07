@@ -13,6 +13,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countLookupLogsForKey = `-- name: CountLookupLogsForKey :one
+SELECT count(*) FROM lookup_logs WHERE api_key_id = $1
+`
+
+func (q *Queries) CountLookupLogsForKey(ctx context.Context, apiKeyID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countLookupLogsForKey, apiKeyID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAPIKey = `-- name: CreateAPIKey :one
 INSERT INTO api_keys (customer_id, key_prefix, key_hash, rate_limit_per_min)
 VALUES ($1, $2, $3, $4)
@@ -236,6 +247,76 @@ func (q *Queries) ListAPIKeys(ctx context.Context, customerID int64) ([]ApiKey, 
 			&i.RateLimitPerMin,
 			&i.CreatedAt,
 			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomers = `-- name: ListCustomers :many
+SELECT id, name, type, webhook_url, webhook_secret_ref, watch_rules, created_at FROM customers ORDER BY id
+`
+
+func (q *Queries) ListCustomers(ctx context.Context) ([]Customer, error) {
+	rows, err := q.db.Query(ctx, listCustomers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Customer{}
+	for rows.Next() {
+		var i Customer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Type,
+			&i.WebhookUrl,
+			&i.WebhookSecretRef,
+			&i.WatchRules,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLookupLogs = `-- name: ListLookupLogs :many
+SELECT id, customer_id, api_key_id, entity_type, matched, latency_ms, ts FROM lookup_logs WHERE customer_id = $1 ORDER BY ts DESC, id DESC LIMIT $2
+`
+
+type ListLookupLogsParams struct {
+	CustomerID int64 `json:"customer_id"`
+	Limit      int32 `json:"limit"`
+}
+
+// Usage detail for one customer (FR-13). Never contains the looked-up value.
+func (q *Queries) ListLookupLogs(ctx context.Context, arg ListLookupLogsParams) ([]LookupLog, error) {
+	rows, err := q.db.Query(ctx, listLookupLogs, arg.CustomerID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LookupLog{}
+	for rows.Next() {
+		var i LookupLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.CustomerID,
+			&i.ApiKeyID,
+			&i.EntityType,
+			&i.Matched,
+			&i.LatencyMs,
+			&i.Ts,
 		); err != nil {
 			return nil, err
 		}

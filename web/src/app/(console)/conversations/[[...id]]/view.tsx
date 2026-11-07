@@ -6,9 +6,13 @@ import { Bubble, EntityCard, StageBar } from "@/components/chat";
 import { Avatar, Badge, Chip, Head, Typing } from "@/components/ui";
 import { DEV_CHAT, useAgo, useQuery, useStickToBottom } from "@/lib/hooks";
 import { handback, operatorSend, takeover, useStore } from "@/lib/store";
+import { summaryTime, useAISummary, useStageHistory } from "@/lib/summary";
+import { USE_SAMPLE } from "@/lib/store";
 import type { Conversation } from "@/lib/types";
 
+// "active" = still running (bot or operator); it is what the page opens on.
 const FILTERS: [string, string][] = [
+  ["active", "Active"],
   ["all", "All"],
   ["bot", "Bot"],
   ["operator", "Operator"],
@@ -20,10 +24,11 @@ export function ConversationsView() {
   const q = useQuery();
   const ago = useAgo();
   const params = useParams<{ id?: string[] }>();
-  const f = q.get("status", "all");
-  const list = data.convos.filter((c) => f === "all" || c.status === f);
-  const c = data.convos.find((x) => x.id === params.id?.[0]) ?? data.convos[0];
-  const qs = f === "all" ? "" : `?status=${f}`;
+  const f = q.get("status", "active");
+  const list = data.convos.filter((c) => f === "all" || (f === "active" ? c.status !== "closed" : c.status === f));
+  // No id in the URL: open the first chat of the current tab, so Active never opens a closed chat.
+  const c = data.convos.find((x) => x.id === params.id?.[0]) ?? list[0];
+  const qs = f === "active" ? "" : `?status=${f}`;
 
   return (
     <>
@@ -41,7 +46,7 @@ export function ConversationsView() {
         <div className="list">
           <div className="tabs" role="group" aria-label="Filter by status">
             {FILTERS.map(([k, l]) => (
-              <button key={k} aria-pressed={f === k} onClick={() => q.set({ status: k })}>
+              <button key={k} aria-pressed={f === k} onClick={() => q.set({ status: k === "active" ? null : k }, "/conversations")}>
                 {l}
               </button>
             ))}
@@ -72,7 +77,7 @@ export function ConversationsView() {
           ) : (
             <div className="card empty">
               <b>Nothing here</b>
-              <span>No {f} conversations right now.</span>
+              <span>{f === "all" ? "No conversations yet." : `No ${(FILTERS.find(([k]) => k === f)?.[1] ?? f).toLowerCase()} conversations right now.`}</span>
             </div>
           )}
         </div>
@@ -101,6 +106,10 @@ function ChatPane({ c }: { c: Conversation }) {
   const ents = data.entities.filter((e) => e.convoId === c.id);
   const typing = ui.typing[c.id];
   const ref = useStickToBottom(`${c.msgs.length}-${ents.length}-${typing}`);
+  // Stage history and AI summary re-check when the stage changes; a missing summary is generated, a
+  // stale one is left to the backend refresh (stage change / every few messages) or the Refresh button.
+  const reached = useStageHistory(USE_SAMPLE ? null : c.id, c.stage);
+  const ai = useAISummary(USE_SAMPLE || !c.msgs.length ? null : `/internal/conversations/${encodeURIComponent(c.id)}/summary`, `${c.stage}-${c.msgs.length > 0}`, false);
   if (!p) return null;
   const isOp = c.status === "operator";
   const closed = c.status === "closed";
@@ -172,7 +181,27 @@ function ChatPane({ c }: { c: Conversation }) {
         <Chip>{c.scam}</Chip>
         <Badge word={isOp ? "operator" : closed ? "closed" : "bot replying"} tone={isOp ? "operator" : closed ? "neutral" : "info"} />
       </div>
-      <StageBar c={c} />
+      <StageBar c={c} reached={reached} />
+      {!USE_SAMPLE && c.msgs.length > 0 && (
+        <div className="chat-sum" data-testid="convo-ai-summary" aria-busy={ai.loading}>
+          <span className="caps muted">AI summary</span>
+          {ai.summary ? (
+            <p data-testid="convo-ai-summary-text">{ai.summary.summary}</p>
+          ) : (
+            <span className="muted">{ai.loading ? "Writing a summary…" : ai.error ? `AI summary unavailable: ${ai.error}` : "No summary yet."}</span>
+          )}
+          {ai.summary && (
+            <small className="muted">
+              {ai.summary.model.replace(/^anthropic\//, "")} · {summaryTime(ai.summary.created_at)}
+              {ai.stale ? " · older than the latest messages" : ""}
+              {ai.loading ? " · updating…" : ""}{" "}
+              <button type="button" className="btn btn-quiet btn-sm" onClick={ai.regenerate} disabled={ai.loading} data-testid="convo-ai-summary-refresh">
+                Refresh
+              </button>
+            </small>
+          )}
+        </div>
+      )}
       <div className="msgs" ref={ref}>
         {c.msgs.map((m, i) => (
           <Bubble key={i} m={m} />

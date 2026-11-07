@@ -3,10 +3,10 @@ package honeypot
 // End-to-end test of the live honeypot loop against real PostgreSQL and a real Temporal server,
 // with a fake channel sender and a fake LLM:
 //
-//	SOCKABUS_TEST_POSTGRES_URL=postgres://buru:buru@localhost:5432/buru?sslmode=disable \
+//	SOCKABUS_TEST_POSTGRES_URL=postgres://buru:buru@localhost:15432/sockabus_e2e?sslmode=disable \
 //	SOCKABUS_TEST_TEMPORAL=localhost:7233 go test ./internal/honeypot -run TestE2E -v
 //
-// Migrations must be applied (make migrate-up). Skipped when the env vars are not set.
+// Start the scratch DB first (make e2e-up: migrated + seeded). Skipped when the env vars are not set.
 
 import (
 	"bytes"
@@ -117,7 +117,7 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 	fake := &fakeLLM{}
 	queue := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
 	// ReadMin below 10 s on purpose: the workflow must clamp it to the FR-3 floor.
-	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second}
+	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second, BubbleGap: time.Millisecond}
 	svc := NewService(pool, box, fake, fake, tc, senders, Config{TaskQueue: queue, Timing: timing}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	w := worker.New(tc, queue, worker.Options{})
@@ -228,7 +228,7 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 			wallet = e
 		}
 	}
-	if wallet.ID == 0 || wallet.BankOrChain.String != "tron" || wallet.Confidence == db.ConfidenceLevelHigh {
+	if wallet.ID == 0 || wallet.BankOrChain.String != "TRON" || wallet.Confidence == db.ConfidenceLevelHigh {
 		t.Fatalf("wallet entity = %+v (must exist, chain tron, not high before verification)", wallet)
 	}
 
@@ -240,17 +240,24 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 		t.Fatalf("operator message not sent")
 	}
 
-	// 5. Lookup: unverified → medium; verified → high (FR-9).
+	// 5. Lookup policy A: an unverified wallet never matches; verified → high (FR-9).
 	res, err := svc.Lookup(ctx, LookupRequest{Type: "wallet", Value: addr, Bank: "TRC20"})
-	if err != nil || !res.Match || res.Confidence != "medium" || len(res.ScamTypes) == 0 {
-		t.Fatalf("lookup before verification = %+v, %v", res, err)
+	if err != nil || res.Match {
+		t.Fatalf("lookup before verification = %+v, %v (want no match)", res, err)
 	}
 	if _, err := svc.Verify(ctx, wallet.ID, opID, "verified", "e2e"); err != nil {
 		t.Fatal(err)
 	}
 	res, _ = svc.Lookup(ctx, LookupRequest{Type: "wallet", Value: addr})
-	if res.Confidence != "high" || res.ScamTypes[0] != "investment" {
+	if !res.Match || res.Status != "verified" || res.Confidence != "high" || len(res.ScamTypes) == 0 || res.ScamTypes[0] != "investment" {
 		t.Fatalf("lookup after verification = %+v", res)
+	}
+	if res.RiskScore < 0.85 || res.Reason != "ACCOUNT_SUPPLIED_BY_SCAMMER" || res.RecommendedAction != "HOLD_FOR_REVIEW" || res.Evidence != nil {
+		t.Fatalf("lookup risk fields = %+v (want hold, no evidence without WithEvidence)", res)
+	}
+	res, _ = svc.Lookup(ctx, LookupRequest{Type: "wallet", Value: addr, WithEvidence: true})
+	if res.Evidence == nil || res.Evidence.TranscriptRef != fmt.Sprintf("conv_%d", convID) || res.Evidence.Excerpt == "" {
+		t.Fatalf("lookup evidence = %+v", res.Evidence)
 	}
 
 	// 6. Hand back to the bot. The operator already answered message 2, so the bot stays quiet
@@ -346,7 +353,7 @@ func TestE2EHungLLMStillReplies(t *testing.T) {
 	senders := gateway.NewRegistry()
 	senders.Register(gateway.ChannelTelegram, sender)
 	queue := fmt.Sprintf("e2e-hung-%d", time.Now().UnixNano())
-	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second}
+	timing := workflows.Timing{ReadMin: time.Second, ReadMax: 11 * time.Second, TypingMin: time.Second, TypingMax: time.Second, BubbleGap: time.Millisecond}
 	svc := NewService(pool, box, hangingLLM{}, hangingLLM{}, tc, senders, Config{TaskQueue: queue, Timing: timing},
 		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	w := worker.New(tc, queue, worker.Options{})

@@ -25,20 +25,30 @@ func (q *Queries) CountInboundMessages(ctx context.Context, conversationID int64
 }
 
 const createConversationForPeer = `-- name: CreateConversationForPeer :one
-INSERT INTO conversations (account_id, playbook_id, temporal_workflow_id, scammer_handle, scammer_peer_ref, started_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref
+INSERT INTO conversations (account_id, playbook_id, temporal_workflow_id, scammer_handle, scammer_peer_ref, started_at,
+                           scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT DO NOTHING
+RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref, archived_at
 `
 
 type CreateConversationForPeerParams struct {
-	AccountID          int64       `json:"account_id"`
-	PlaybookID         pgtype.Int8 `json:"playbook_id"`
-	TemporalWorkflowID string      `json:"temporal_workflow_id"`
-	ScammerHandle      string      `json:"scammer_handle"`
-	ScammerPeerRef     pgtype.Text `json:"scammer_peer_ref"`
-	StartedAt          time.Time   `json:"started_at"`
+	AccountID                int64       `json:"account_id"`
+	PlaybookID               pgtype.Int8 `json:"playbook_id"`
+	TemporalWorkflowID       string      `json:"temporal_workflow_id"`
+	ScammerHandle            pgtype.Text `json:"scammer_handle"`
+	ScammerPeerRef           pgtype.Text `json:"scammer_peer_ref"`
+	StartedAt                time.Time   `json:"started_at"`
+	ScammerHandleCiphertext  []byte      `json:"-"`
+	ScammerPeerRefCiphertext []byte      `json:"-"`
+	ScammerPeerRefBidx       []byte      `json:"-"`
+	IdentifiersDekRef        pgtype.Text `json:"-"`
 }
 
+// Returns no row when another open conversation for the same (account, peer) won the race
+// (conversations_open_peer_bidx_uq from 000012, or conversations_open_peer_uq from 000006 while the
+// plaintext is still written); the caller then re-selects with FindOpenConversationByPeer.
+// scammer_handle / scammer_peer_ref are NULL once SOCKABUS_IDENTIFIER_PLAINTEXT=0 (phase 2).
 func (q *Queries) CreateConversationForPeer(ctx context.Context, arg CreateConversationForPeerParams) (Conversation, error) {
 	row := q.db.QueryRow(ctx, createConversationForPeer,
 		arg.AccountID,
@@ -47,6 +57,10 @@ func (q *Queries) CreateConversationForPeer(ctx context.Context, arg CreateConve
 		arg.ScammerHandle,
 		arg.ScammerPeerRef,
 		arg.StartedAt,
+		arg.ScammerHandleCiphertext,
+		arg.ScammerPeerRefCiphertext,
+		arg.ScammerPeerRefBidx,
+		arg.IdentifiersDekRef,
 	)
 	var i Conversation
 	err := row.Scan(
@@ -62,6 +76,11 @@ func (q *Queries) CreateConversationForPeer(ctx context.Context, arg CreateConve
 		&i.LastMessageAt,
 		&i.ClosedAt,
 		&i.ScammerPeerRef,
+		&i.ScammerHandleCiphertext,
+		&i.ScammerPeerRefCiphertext,
+		&i.ScammerPeerRefBidx,
+		&i.IdentifiersDekRef,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -69,7 +88,7 @@ func (q *Queries) CreateConversationForPeer(ctx context.Context, arg CreateConve
 const createPersonaWithProfile = `-- name: CreatePersonaWithProfile :one
 INSERT INTO personas (name, age, language_mix, backstory, wealth_profile, status, profile, demo_identifiers)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, name, age, language_mix, backstory, wealth_profile, status, created_at, updated_at, profile, demo_identifiers
+RETURNING id, name, age, language_mix, backstory, wealth_profile, status, created_at, updated_at, profile, demo_identifiers, demo_identifiers_ciphertext, demo_identifiers_dek_ref
 `
 
 type CreatePersonaWithProfileParams struct {
@@ -83,7 +102,9 @@ type CreatePersonaWithProfileParams struct {
 	DemoIdentifiers json.RawMessage `json:"demo_identifiers"`
 }
 
-// Full insert used by the operator API and the persona generator.
+// Full insert used by the operator API and the persona generator. demo_identifiers is the plaintext
+// copy (NULL once SOCKABUS_IDENTIFIER_PLAINTEXT=0); the ciphertext is set by SetPersonaDemoIdentifiersCiphertext
+// in the same transaction, because its AAD needs the new persona id.
 func (q *Queries) CreatePersonaWithProfile(ctx context.Context, arg CreatePersonaWithProfileParams) (Persona, error) {
 	row := q.db.QueryRow(ctx, createPersonaWithProfile,
 		arg.Name,
@@ -108,6 +129,8 @@ func (q *Queries) CreatePersonaWithProfile(ctx context.Context, arg CreatePerson
 		&i.UpdatedAt,
 		&i.Profile,
 		&i.DemoIdentifiers,
+		&i.DemoIdentifiersCiphertext,
+		&i.DemoIdentifiersDekRef,
 	)
 	return i, err
 }
@@ -123,23 +146,27 @@ func (q *Queries) DetachPlaybooks(ctx context.Context, personaID int64) error {
 
 const findOpenConversationByPeer = `-- name: FindOpenConversationByPeer :one
 
-SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref FROM conversations
-WHERE account_id = $1 AND scammer_peer_ref = $2 AND status <> 'closed'
+SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref, archived_at FROM conversations
+WHERE account_id = $1 AND status <> 'closed'
+  AND (scammer_peer_ref_bidx = $2::bytea
+       OR (scammer_peer_ref_bidx IS NULL AND scammer_peer_ref = $3::text))
 ORDER BY started_at DESC
 LIMIT 1
 `
 
 type FindOpenConversationByPeerParams struct {
-	AccountID      int64       `json:"account_id"`
-	ScammerPeerRef pgtype.Text `json:"scammer_peer_ref"`
+	AccountID int64  `json:"account_id"`
+	PeerBidx  []byte `json:"peer_bidx"`
+	PeerRef   string `json:"peer_ref"`
 }
 
 // Live honeypot queries (FR-2 routing, persona generator, operator console) that build on the
 // core queries in conversations.sql, entities.sql and personas.sql. Uses columns from
 // migration 000004 (scammer_peer_ref, dedupe_key, personas.profile/demo_identifiers).
-// Routes an inbound message to its open conversation by channel reply address (FR-2).
+// Routes an inbound message to its open conversation by channel reply address (FR-2). Matches the
+// keyed blind index (000012); rows not yet backfilled (bidx NULL) fall back to the plaintext column.
 func (q *Queries) FindOpenConversationByPeer(ctx context.Context, arg FindOpenConversationByPeerParams) (Conversation, error) {
-	row := q.db.QueryRow(ctx, findOpenConversationByPeer, arg.AccountID, arg.ScammerPeerRef)
+	row := q.db.QueryRow(ctx, findOpenConversationByPeer, arg.AccountID, arg.PeerBidx, arg.PeerRef)
 	var i Conversation
 	err := row.Scan(
 		&i.ID,
@@ -154,6 +181,11 @@ func (q *Queries) FindOpenConversationByPeer(ctx context.Context, arg FindOpenCo
 		&i.LastMessageAt,
 		&i.ClosedAt,
 		&i.ScammerPeerRef,
+		&i.ScammerHandleCiphertext,
+		&i.ScammerPeerRefCiphertext,
+		&i.ScammerPeerRefBidx,
+		&i.IdentifiersDekRef,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -312,7 +344,7 @@ func (q *Queries) ListConversationEntities(ctx context.Context, conversationID i
 }
 
 const listConversationsWithPersona = `-- name: ListConversationsWithPersona :many
-SELECT c.id, c.account_id, c.playbook_id, c.temporal_workflow_id, c.scammer_handle, c.scam_type, c.stage, c.status, c.started_at, c.last_message_at, c.closed_at, c.scammer_peer_ref, a.persona_id, a.channel, p.name AS persona_name
+SELECT c.id, c.account_id, c.playbook_id, c.temporal_workflow_id, c.scammer_handle, c.scam_type, c.stage, c.status, c.started_at, c.last_message_at, c.closed_at, c.scammer_peer_ref, c.scammer_handle_ciphertext, c.scammer_peer_ref_ciphertext, c.scammer_peer_ref_bidx, c.identifiers_dek_ref, c.archived_at, a.persona_id, a.channel, p.name AS persona_name
 FROM conversations c
 JOIN honeypot_accounts a ON a.id = c.account_id
 JOIN personas p ON p.id = a.persona_id
@@ -327,21 +359,26 @@ type ListConversationsWithPersonaParams struct {
 }
 
 type ListConversationsWithPersonaRow struct {
-	ID                 int64              `json:"id"`
-	AccountID          int64              `json:"account_id"`
-	PlaybookID         pgtype.Int8        `json:"playbook_id"`
-	TemporalWorkflowID string             `json:"temporal_workflow_id"`
-	ScammerHandle      string             `json:"scammer_handle"`
-	ScamType           NullScamType       `json:"scam_type"`
-	Stage              string             `json:"stage"`
-	Status             ConversationStatus `json:"status"`
-	StartedAt          time.Time          `json:"started_at"`
-	LastMessageAt      *time.Time         `json:"last_message_at"`
-	ClosedAt           *time.Time         `json:"closed_at"`
-	ScammerPeerRef     pgtype.Text        `json:"scammer_peer_ref"`
-	PersonaID          int64              `json:"persona_id"`
-	Channel            Channel            `json:"channel"`
-	PersonaName        string             `json:"persona_name"`
+	ID                       int64              `json:"id"`
+	AccountID                int64              `json:"account_id"`
+	PlaybookID               pgtype.Int8        `json:"playbook_id"`
+	TemporalWorkflowID       string             `json:"temporal_workflow_id"`
+	ScammerHandle            pgtype.Text        `json:"scammer_handle"`
+	ScamType                 NullScamType       `json:"scam_type"`
+	Stage                    string             `json:"stage"`
+	Status                   ConversationStatus `json:"status"`
+	StartedAt                time.Time          `json:"started_at"`
+	LastMessageAt            *time.Time         `json:"last_message_at"`
+	ClosedAt                 *time.Time         `json:"closed_at"`
+	ScammerPeerRef           pgtype.Text        `json:"scammer_peer_ref"`
+	ScammerHandleCiphertext  []byte             `json:"-"`
+	ScammerPeerRefCiphertext []byte             `json:"-"`
+	ScammerPeerRefBidx       []byte             `json:"-"`
+	IdentifiersDekRef        pgtype.Text        `json:"-"`
+	ArchivedAt               *time.Time         `json:"archived_at"`
+	PersonaID                int64              `json:"persona_id"`
+	Channel                  Channel            `json:"channel"`
+	PersonaName              string             `json:"persona_name"`
 }
 
 // Operator console list; NULL status = all.
@@ -367,6 +404,11 @@ func (q *Queries) ListConversationsWithPersona(ctx context.Context, arg ListConv
 			&i.LastMessageAt,
 			&i.ClosedAt,
 			&i.ScammerPeerRef,
+			&i.ScammerHandleCiphertext,
+			&i.ScammerPeerRefCiphertext,
+			&i.ScammerPeerRefBidx,
+			&i.IdentifiersDekRef,
+			&i.ArchivedAt,
 			&i.PersonaID,
 			&i.Channel,
 			&i.PersonaName,
@@ -402,6 +444,76 @@ func (q *Queries) ListPersonasForDedupe(ctx context.Context) ([]ListPersonasForD
 	for rows.Next() {
 		var i ListPersonasForDedupeRow
 		if err := rows.Scan(&i.Name, &i.Age, &i.Profile); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRAGMessages = `-- name: ListRAGMessages :many
+SELECT m.id, m.conversation_id, m.direction, m.sender_type, m.body_ciphertext, m.dek_ref, m.sent_at,
+       c.scam_type, a.persona_id, p.profile, p.language_mix
+FROM messages m
+JOIN conversations c ON c.id = m.conversation_id
+JOIN honeypot_accounts a ON a.id = c.account_id
+JOIN personas p ON p.id = a.persona_id
+WHERE m.conversation_id IN (
+    SELECT s.conversation_id FROM entity_sightings s
+    JOIN entities e ON e.id = s.entity_id
+    WHERE e.type IN ('bank_account', 'wallet') AND e.status <> 'rejected' AND s.extracted_at >= $1
+)
+ORDER BY m.conversation_id, m.sent_at, m.id
+LIMIT $2
+`
+
+type ListRAGMessagesParams struct {
+	Since    time.Time `json:"since"`
+	RowLimit int32     `json:"row_limit"`
+}
+
+type ListRAGMessagesRow struct {
+	ID             int64            `json:"id"`
+	ConversationID int64            `json:"conversation_id"`
+	Direction      MessageDirection `json:"direction"`
+	SenderType     SenderType       `json:"sender_type"`
+	BodyCiphertext []byte           `json:"body_ciphertext"`
+	DekRef         string           `json:"dek_ref"`
+	SentAt         time.Time        `json:"sent_at"`
+	ScamType       NullScamType     `json:"scam_type"`
+	PersonaID      int64            `json:"persona_id"`
+	Profile        json.RawMessage  `json:"profile"`
+	LanguageMix    json.RawMessage  `json:"language_mix"`
+}
+
+// Every message of conversations where the persona got a bank account or wallet out of the
+// scammer since sqlc.arg(since), in chat order, with the persona's profile so retrieval can prefer
+// personas of the same community. Feeds the in-memory reply retrieval index (internal/rag).
+func (q *Queries) ListRAGMessages(ctx context.Context, arg ListRAGMessagesParams) ([]ListRAGMessagesRow, error) {
+	rows, err := q.db.Query(ctx, listRAGMessages, arg.Since, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRAGMessagesRow{}
+	for rows.Next() {
+		var i ListRAGMessagesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversationID,
+			&i.Direction,
+			&i.SenderType,
+			&i.BodyCiphertext,
+			&i.DekRef,
+			&i.SentAt,
+			&i.ScamType,
+			&i.PersonaID,
+			&i.Profile,
+			&i.LanguageMix,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -467,4 +579,24 @@ type SetConversationPlaybookParams struct {
 func (q *Queries) SetConversationPlaybook(ctx context.Context, arg SetConversationPlaybookParams) error {
 	_, err := q.db.Exec(ctx, setConversationPlaybook, arg.ID, arg.PlaybookID)
 	return err
+}
+
+const setPersonaDemoIdentifiersCiphertext = `-- name: SetPersonaDemoIdentifiersCiphertext :execrows
+UPDATE personas SET demo_identifiers_ciphertext = $2, demo_identifiers_dek_ref = $3
+WHERE id = $1 AND demo_identifiers_ciphertext IS NULL
+`
+
+type SetPersonaDemoIdentifiersCiphertextParams struct {
+	ID                        int64       `json:"id"`
+	DemoIdentifiersCiphertext []byte      `json:"-"`
+	DemoIdentifiersDekRef     pgtype.Text `json:"-"`
+}
+
+// Idempotent (backfill-encrypt): never overwrites an existing ciphertext.
+func (q *Queries) SetPersonaDemoIdentifiersCiphertext(ctx context.Context, arg SetPersonaDemoIdentifiersCiphertextParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setPersonaDemoIdentifiersCiphertext, arg.ID, arg.DemoIdentifiersCiphertext, arg.DemoIdentifiersDekRef)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

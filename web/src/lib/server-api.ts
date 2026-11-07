@@ -10,12 +10,21 @@ const operatorToken = () => process.env.SOCKABUS_OPERATOR_TOKEN ?? "";
 // Lookup uses its own key once per-customer API keys exist (FR-13); until then the operator token.
 export const lookupToken = () => process.env.SOCKABUS_LOOKUP_TOKEN || operatorToken();
 
+// The browser's IP as Caddy saw it: the right-most X-Forwarded-For entry (the one Caddy appended).
+// Passed on to the Go API so its per-client rate limits count real clients, not this proxy.
+export function clientIP(req: Request): string | null {
+  const parts = (req.headers.get("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const ip = parts.at(-1) ?? "";
+  return /^[0-9a-fA-F:.]{2,45}$/.test(ip) ? ip : null;
+}
+
 export async function goAPI(
   path: string,
-  opts: { method?: string; body?: BodyInit; contentType?: string | null; token?: string; signal?: AbortSignal } = {},
+  opts: { method?: string; body?: BodyInit; contentType?: string | null; token?: string; signal?: AbortSignal; clientIP?: string | null } = {},
 ): Promise<Response> {
   const headers = new Headers({ accept: "application/json" });
   if (opts.contentType) headers.set("content-type", opts.contentType);
+  if (opts.clientIP) headers.set("x-forwarded-for", opts.clientIP);
   const token = opts.token ?? operatorToken();
   if (token) headers.set("authorization", `Bearer ${token}`);
   // A hung backend must not leave the console on "Loading…": give up and return an error instead.

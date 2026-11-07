@@ -11,6 +11,7 @@
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
 - [Usage](#usage)
+- [Testing](#testing)
 - [Project Structure](#project-structure)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
@@ -24,6 +25,7 @@ Multilingual AI personas run on honeypot messaging accounts and keep scammers ta
 - Product requirements: [docs/PRD.md](docs/PRD.md)
 - Technical design: [docs/TRD.md](docs/TRD.md)
 - Live Telegram honeypot setup and testing: [docs/telegram-honeypot.md](docs/telegram-honeypot.md)
+- Playwright end-to-end tests: [playwright/README.md](playwright/README.md)
 
 ## Features
 
@@ -35,6 +37,10 @@ Multilingual AI personas run on honeypot messaging accounts and keep scammers ta
 - Operator takeover and verify/reject; only verified entities return `high` confidence
 - `POST /v1/lookup` customer API
 - Next.js operator console and customer portal (on mock data)
+- Ops status (NFR-9): `GET /internal/status` reports Telegram connection + last message time, LLM errors in the last 15 min and running Temporal workflows; `/readyz` now also checks Temporal; the console `/status` page shows all of it
+- Telegram connector heartbeat to an Uptime Kuma push monitor every 60 s (TR-20)
+- Offline `fake` LLM provider for CI and tests
+- Playwright API + UI tests of the v1.0 demo path, run in CI against the Compose stack (TRD §9)
 
 **Planned:** see [Roadmap](#roadmap).
 
@@ -43,7 +49,8 @@ Multilingual AI personas run on honeypot messaging accounts and keep scammers ta
 - **Frontend:** Next.js + Tailwind (operator console and customer portal)
 - **Backend:** Go modular monolith, Temporal (one workflow per conversation), LLM: Gemini API (demo) → Claude API (production)
 - **Database:** PostgreSQL on Supabase (sqlc + pgx), Redis
-- **Infra / Deployment:** Supabase, Docker / Docker Compose
+- **Infra / Deployment:** Supabase (session-mode pooler), Docker / Docker Compose, Caddy, Uptime Kuma
+- **Testing:** `go test`, Playwright (API + UI), GitHub Actions
 
 ## Getting Started
 
@@ -61,7 +68,7 @@ cd web && pnpm install && cd ..
 ```
 
 ### Environment Variables
-Create `.env` at the repo root and set:
+Copy `.env.example` to `.env` at the repo root. Key variables:
 
 | Variable | Description |
 |----------|-------------|
@@ -72,15 +79,19 @@ Create `.env` at the repo root and set:
 | `SOCKABUS_TEMPORAL_HOSTPORT` | Temporal server host:port |
 | `SOCKABUS_TEMPORAL_NAMESPACE` | Temporal namespace |
 | `SOCKABUS_TEMPORAL_TASK_QUEUE` | Temporal task queue (e.g. `sockabus-main`) |
+| `SOCKABUS_LLM_PROVIDER` | `gemini` (default) \| `anthropic` \| `fake` (offline, CI/tests) \| `none` |
+| `SOCKABUS_REPLY_DELAY_MIN` | FR-3 reply floor (default `10s`). Lower only in CI/tests; refused when `SOCKABUS_ENV=prod` |
+| `SOCKABUS_KUMA_TG_PUSH_URL` | Uptime Kuma push URL for the Telegram heartbeat. Empty = off |
+| `SOCKABUS_KUMA_BACKUP_PUSH_URL` | Uptime Kuma push URL hit after each successful backup. Empty = off |
 | `SUPABASE_PASSWORD` | Supabase database password |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (dashboard) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (dashboard) |
-| `DATABASE_URL` | Pooled database connection |
+| `DATABASE_URL` | Supabase owner login (session pooler, port 5432). Used by migrations, `seed`, `backup`, `db-check`, `app-role`. Never given to the app |
 | `DIRECT_URL` | Direct database connection (migrations) |
 
 ### Run
 ```bash
-make up            # PostgreSQL :5432, Redis :6379, Temporal :7233 (UI :8233)
+make up            # Redis :6379, Temporal :7233 (UI :8233); DB = Supabase (SOCKABUS_POSTGRES_URL)
 make migrate-up
 make run           # API on :8080 (SOCKABUS_MODE=demo: in-memory pitch data)
 curl localhost:8080/readyz
@@ -107,7 +118,9 @@ docker compose exec temporal temporal workflow execute \
 | `make up` / `make down` | Start / stop local dependencies |
 | `make migrate-up` / `make migrate-down` | Apply / roll back one migration |
 | `make sqlc` | Generate `internal/db` from `db/queries` |
-| `make seed` | Load demo operator, playbooks and personas |
+| `make seed` | Load demo operator, playbooks and personas (Supabase when `DATABASE_URL` is set, else local Docker) |
+| `make db-check` | Read-only: applied migration version + rows that would break migration 000005 |
+| `make app-role` | Create or re-key the app login `buru_api`; prints its password once |
 | `make keys` | Print fresh `SOCKABUS_OPERATOR_TOKEN` and `SOCKABUS_MESSAGE_KEY` values |
 | `make tglogin PHONE=… PERSONA=…` | Log a honeypot number into Telegram and bind it |
 | `make sim PERSONA=…` | Chat with a persona without Telegram (needs `make run`) |
@@ -115,9 +128,28 @@ docker compose exec temporal temporal workflow execute \
 | `make run` | Run the API + Temporal worker |
 | `make web` | Run the dashboard |
 | `make test` | `go test -race ./...` |
-| `make test-db` | DB integration tests (needs `make up migrate-up`) |
-| `make test-e2e` | End-to-end honeypot loop on local PostgreSQL + Temporal |
+| `make test-db` | DB integration tests on the Playwright scratch DB (needs `make e2e-up`) |
+| `make test-e2e` | End-to-end honeypot loop on the Playwright scratch DB + Temporal (needs `make e2e-up`; never Supabase) |
 | `make lint` | `go vet` + golangci-lint |
+| `make arch` | Open the architecture diagram in the browser |
+| `make deploy` | On the VPS: pull `main`, migrate Supabase, rebuild and restart the prod stack |
+| `make backup` / `make restore-test` | `pg_dump` of Supabase into `backups/` / restore the newest dump into a throwaway container |
+
+Database scripts run a pinned `postgres:17-alpine` client through Docker (`scripts/pg.sh`), so no local `psql` install is needed.
+
+## Testing
+
+```bash
+make test                     # Go unit tests
+make e2e-up && make test-db test-e2e   # DB + Temporal integration on the throwaway scratch DB (never Supabase)
+make -C playwright install    # once: Playwright deps + Chromium (self-contained in playwright/)
+make e2e-up && make e2e && make e2e-down   # throwaway stack, full suite, teardown
+# or against your own backend:
+cd playwright && SOCKABUS_API_URL=http://localhost:8080 SOCKABUS_WEB_URL=http://localhost:3000 \
+SOCKABUS_OPERATOR_TOKEN=<backend token> pnpm test:e2e   # or test:api / test:ui
+```
+
+Playwright needs a backend in `SOCKABUS_MODE=live` with `SOCKABUS_SIM=1`, `SOCKABUS_LLM_PROVIDER=fake` and short reply timing. Point it at a scratch database, never Supabase. Full settings: [playwright/README.md](playwright/README.md). CI runs both projects on every PR (job `e2e` in `.github/workflows/ci.yml`).
 
 ## Project Structure
 
@@ -146,7 +178,9 @@ docker compose exec temporal temporal workflow execute \
 | `internal/engine` | Honeypot loop: extract → classify → stage → persona reply |
 | `internal/db` | sqlc-generated data layer |
 | `internal/demostore` | In-memory data layer seeded from `seed.json` (to be replaced by PostgreSQL + Redis) |
-| `docs` | PRD, TRD, contributing rules |
+| `playwright` | Playwright API (`playwright/api`) and UI (`playwright/ui`) tests, config `playwright/playwright.config.ts`, its own `package.json`, `Makefile`, scripts, results and reports |
+| `scripts` | `pg.sh` (Dockerised psql/pg_dump), `backup.sh`, `restore-test.sh`, `app-role.sh`, `check-migrations.sql` |
+| `docs` | PRD, TRD, contributing rules, architecture diagram (`docs/archify`) |
 
 ## Roadmap
 

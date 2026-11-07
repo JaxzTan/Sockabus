@@ -12,3 +12,6 @@ coverage.out
 .vscode
 
 backups/
+.secrets
+node_modules
+playwright

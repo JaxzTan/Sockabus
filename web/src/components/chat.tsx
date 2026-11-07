@@ -5,16 +5,28 @@ import { Badge } from "@/components/ui";
 import { plural, showVal, STAGES, typeLabel } from "@/lib/format";
 import { decide } from "@/lib/store";
 import { bankHref } from "@/components/verified";
+import { summaryTime, type ApiStageEvent } from "@/lib/summary";
 import type { Conversation, Entity, Message } from "@/lib/types";
 
-export function StageBar({ c }: { c: Conversation }) {
+const STAGE_KEYS = ["rapport", "bait", "payment_request", "stall"];
+
+// StageBar shows the playbook stage. With `reached` (GET /internal/conversations/{id}/stages) each
+// stage that was reached carries its time and source in the tooltip.
+export function StageBar({ c, reached }: { c: Conversation; reached?: Record<string, ApiStageEvent> }) {
   return (
-    <div className="stages" aria-label="Playbook stage">
+    <div className="stages" aria-label="Playbook stage" data-testid="stage-bar">
       {STAGES.map((s, i) => {
         const cls = i < c.stage ? "done" : i === c.stage ? "now" : "";
+        const ev = reached?.[STAGE_KEYS[i]];
         return (
           <Fragment key={s}>
-            <span className={`stage ${cls}`}>
+            <span
+              className={`stage ${cls}`}
+              data-testid="stage-step"
+              data-stage={STAGE_KEYS[i]}
+              data-reached-at={ev?.created_at}
+              title={ev ? `${s}: reached ${summaryTime(ev.created_at)} (${ev.source})` : undefined}
+            >
               <b>{i < c.stage ? "✓" : i + 1}</b>
               {s}
             </span>
@@ -27,6 +39,15 @@ export function StageBar({ c }: { c: Conversation }) {
 }
 
 export function Bubble({ m }: { m: Message }) {
+  if (m.undecryptable)
+    return (
+      <div className={`msg ${m.who} undecryptable`} data-testid="chat-message" data-undecryptable="true">
+        <p>Message could not be decrypted</p>
+        <small data-testid="chat-message-sender">
+          {m.who} · {m.t}
+        </small>
+      </div>
+    );
   return (
     <div className={`msg ${m.who}`} data-testid="chat-message">
       <p>{m.text}</p>

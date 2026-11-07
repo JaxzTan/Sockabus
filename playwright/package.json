@@ -1,0 +1,22 @@
+{
+  "name": "sockabus-e2e",
+  "private": true,
+  "description": "Playwright API and UI tests for the v1.0 demo path (TRD §9). Self-contained: run everything from playwright/ (see README.md, Makefile). The console app lives in ../web.",
+  "scripts": {
+    "setup": "pnpm install && playwright install chromium",
+    "test": "playwright test",
+    "test:api": "playwright test --project=api",
+    "test:ui": "playwright test --project=ui",
+    "test:e2e": "playwright test",
+    "report": "playwright show-report playwright-report",
+    "stack:up": "scripts/e2e-stack.sh up",
+    "stack:down": "scripts/e2e-stack.sh down",
+    "stack:status": "scripts/e2e-stack.sh status",
+    "stack:test": "scripts/e2e-stack.sh test",
+    "monitor": "env -u DATABASE_URL -u SOCKABUS_POSTGRES_URL scripts/e2e-monitor.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  },
+  "packageManager": "pnpm@10.32.1"
+}

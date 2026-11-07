@@ -16,7 +16,9 @@ export function PersonasView() {
   data.personas.forEach((p) => {
     if (counts[p.status] != null) counts[p.status]++;
   });
-  const list = data.personas.filter((p) => f === "all" || p.status === f);
+  // Personas bound to a real number (e.g. Auntie Mei) go first; others keep their order.
+  const live = (h: string) => (h === "web chat only" || h === "not bound" ? 1 : 0);
+  const list = data.personas.filter((p) => f === "all" || p.status === f).sort((a, b) => live(a.handle) - live(b.handle));
   const np = newId ? data.personas.find((p) => p.id === newId) : undefined;
   const selId = q.get("selected");
   const sel = selId ? data.personas.find((p) => p.id === selId) : undefined;
@@ -186,7 +188,7 @@ export function PersonasView() {
                       aria-pressed={p.id === selId}
                       data-testid="persona-modify-btn"
                     >
-                      Modify
+                      Details
                     </button>
                     {p.status === "active" ? (
                       <button className="btn btn-secondary btn-sm" onClick={() => setPersonaStatus(p.id, "paused")} data-testid="persona-pause-btn">

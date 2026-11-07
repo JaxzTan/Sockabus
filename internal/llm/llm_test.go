@@ -101,3 +101,20 @@ func TestNewProviderSelection(t *testing.T) {
 		t.Fatal("unknown provider should error")
 	}
 }
+
+func TestFakeIsDeterministic(t *testing.T) {
+	c, err := New(Config{Provider: "fake"})
+	if err != nil || c == nil || c.Name() != "fake" {
+		t.Fatalf("New(fake) = %v, %v", c, err)
+	}
+	req := Request{System: "persona", Turns: []Turn{{RoleUser, "transfer to Maybank now"}}}
+	a, _ := c.Generate(context.Background(), req)
+	b, _ := c.Generate(context.Background(), req)
+	if a == "" || a != b {
+		t.Fatalf("same input gave %q and %q", a, b)
+	}
+	out, _ := c.Generate(context.Background(), Request{System: "You extract scam intelligence from ONE chat message", Turns: []Turn{{RoleUser, "x"}}})
+	if out != `{"entities":[]}` {
+		t.Fatalf("extraction = %q", out)
+	}
+}

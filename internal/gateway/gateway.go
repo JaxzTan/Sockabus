@@ -51,6 +51,9 @@ type Sender interface {
 
 var ErrNoSender = errors.New("gateway: no sender for channel")
 
+// ErrNotConnected means the channel account has no live session (never started, logged out or banned).
+var ErrNotConnected = errors.New("account is not connected")
+
 // Registry maps a channel name to its Sender.
 type Registry struct {
 	mu      sync.RWMutex

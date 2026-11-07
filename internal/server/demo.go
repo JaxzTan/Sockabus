@@ -8,6 +8,7 @@ import (
 
 	"github.com/JaxzTan/Buru_AI/internal/demostore"
 	"github.com/JaxzTan/Buru_AI/internal/extraction"
+	"github.com/JaxzTan/Buru_AI/internal/risk"
 )
 
 func decode(r *http.Request, v any) bool { return json.NewDecoder(r.Body).Decode(v) == nil }
@@ -35,8 +36,10 @@ func (s *Server) registerDemo(mux *http.ServeMux) {
 		if e.Status == "verified" {
 			conf = "high"
 		}
-		writeJSON(w, 200, map[string]any{"match": true, "confidence": conf, "scam_types": []string{e.ScamType},
-			"first_seen": e.FirstAt.UTC().Format(time.RFC3339), "last_seen": e.LastAt.UTC().Format(time.RFC3339), "sightings": e.Sightings})
+		ra := risk.Assess(e.Type, e.Status, conf, int32(e.Sightings)) // same rules as the live API
+		writeJSON(w, 200, map[string]any{"match": true, "confidence": conf, "status": e.Status, "scam_types": []string{e.ScamType},
+			"first_seen": e.FirstAt.UTC().Format(time.RFC3339), "last_seen": e.LastAt.UTC().Format(time.RFC3339), "sightings": e.Sightings,
+			"risk_score": ra.Score, "reason": ra.Reason, "signals": ra.Signals, "recommended_action": ra.Action})
 	})
 	mux.HandleFunc("GET /v1/entities", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, st.Entities(true)) })
 	mux.HandleFunc("GET /v1/weeks", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, st.Weeks()) })

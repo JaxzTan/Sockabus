@@ -1,11 +1,9 @@
 # Production overlay (docs/TRD.md §8, TR-23): one VPS runs the full stack behind Caddy.
 # make deploy uses: docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile app
 # Only Caddy is reachable from outside; Temporal UI and Uptime Kuma bind to 127.0.0.1 (open them over an SSH tunnel).
+# The database is Supabase: the app uses SOCKABUS_POSTGRES_URL (buru_api) and migrations use DATABASE_URL (owner),
+# both from .env, both on the session-mode pooler (port 5432).
 services:
-  postgres:
-    restart: unless-stopped
-    ports: !reset []
-
   redis:
     restart: unless-stopped
     ports: !reset []
@@ -20,6 +18,9 @@ services:
   app:
     restart: unless-stopped
     ports: !reset []
+    depends_on: !override
+      redis: { condition: service_healthy }
+      temporal: { condition: service_started }
     environment:
       SOCKABUS_ENV: prod
       SOCKABUS_TG_SESSION_DIR: /secrets/telegram
@@ -29,6 +30,8 @@ services:
   web:
     restart: unless-stopped
     ports: !reset []
+    environment:
+      SOCKABUS_ENV: prod # web/src/lib/auth.ts ignores SOCKABUS_CONSOLE_AUTH=off in prod
 
   caddy:
     container_name: caddy
@@ -51,6 +54,13 @@ services:
     restart: unless-stopped
     ports: ["127.0.0.1:3001:3001"]
     volumes: [uptime-kuma-data:/app/data]
+
+  # One-off Supabase migration run by make deploy ($(PROD) run --rm migrate); the tools profile keeps it out of `up`.
+  migrate:
+    profiles: [tools]
+    image: migrate/migrate:v4.19.1
+    volumes: [./db/migrations:/migrations:ro]
+    command: ["-path", "/migrations", "-database", "${DATABASE_URL:?set DATABASE_URL in .env: Supabase owner, session pooler port 5432, ?sslmode=require}", "up"]
 
 volumes:
   temporal-data:

@@ -43,6 +43,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+*.env
 !.env.example
 
 # vercel
@@ -56,3 +57,14 @@ test/
 
 # problem folder
 gallery
+
+# Playwright (self-contained in playwright/)
+/playwright/node_modules/
+/playwright/playwright-report/
+/playwright/test-results/
+/playwright/blob-report/
+/playwright/results/
+
+# Playwright test stack state (playwright/scripts/e2e-stack.sh)
+/playwright/.e2e/
+*.txt
