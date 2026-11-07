@@ -29,7 +29,7 @@ INSERT INTO conversations (account_id, playbook_id, temporal_workflow_id, scamme
                            scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT DO NOTHING
-RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref
+RETURNING id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref, archived_at
 `
 
 type CreateConversationForPeerParams struct {
@@ -80,6 +80,7 @@ func (q *Queries) CreateConversationForPeer(ctx context.Context, arg CreateConve
 		&i.ScammerPeerRefCiphertext,
 		&i.ScammerPeerRefBidx,
 		&i.IdentifiersDekRef,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -145,7 +146,7 @@ func (q *Queries) DetachPlaybooks(ctx context.Context, personaID int64) error {
 
 const findOpenConversationByPeer = `-- name: FindOpenConversationByPeer :one
 
-SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref FROM conversations
+SELECT id, account_id, playbook_id, temporal_workflow_id, scammer_handle, scam_type, stage, status, started_at, last_message_at, closed_at, scammer_peer_ref, scammer_handle_ciphertext, scammer_peer_ref_ciphertext, scammer_peer_ref_bidx, identifiers_dek_ref, archived_at FROM conversations
 WHERE account_id = $1 AND status <> 'closed'
   AND (scammer_peer_ref_bidx = $2::bytea
        OR (scammer_peer_ref_bidx IS NULL AND scammer_peer_ref = $3::text))
@@ -184,6 +185,7 @@ func (q *Queries) FindOpenConversationByPeer(ctx context.Context, arg FindOpenCo
 		&i.ScammerPeerRefCiphertext,
 		&i.ScammerPeerRefBidx,
 		&i.IdentifiersDekRef,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -342,7 +344,7 @@ func (q *Queries) ListConversationEntities(ctx context.Context, conversationID i
 }
 
 const listConversationsWithPersona = `-- name: ListConversationsWithPersona :many
-SELECT c.id, c.account_id, c.playbook_id, c.temporal_workflow_id, c.scammer_handle, c.scam_type, c.stage, c.status, c.started_at, c.last_message_at, c.closed_at, c.scammer_peer_ref, c.scammer_handle_ciphertext, c.scammer_peer_ref_ciphertext, c.scammer_peer_ref_bidx, c.identifiers_dek_ref, a.persona_id, a.channel, p.name AS persona_name
+SELECT c.id, c.account_id, c.playbook_id, c.temporal_workflow_id, c.scammer_handle, c.scam_type, c.stage, c.status, c.started_at, c.last_message_at, c.closed_at, c.scammer_peer_ref, c.scammer_handle_ciphertext, c.scammer_peer_ref_ciphertext, c.scammer_peer_ref_bidx, c.identifiers_dek_ref, c.archived_at, a.persona_id, a.channel, p.name AS persona_name
 FROM conversations c
 JOIN honeypot_accounts a ON a.id = c.account_id
 JOIN personas p ON p.id = a.persona_id
@@ -373,6 +375,7 @@ type ListConversationsWithPersonaRow struct {
 	ScammerPeerRefCiphertext []byte             `json:"-"`
 	ScammerPeerRefBidx       []byte             `json:"-"`
 	IdentifiersDekRef        pgtype.Text        `json:"-"`
+	ArchivedAt               *time.Time         `json:"archived_at"`
 	PersonaID                int64              `json:"persona_id"`
 	Channel                  Channel            `json:"channel"`
 	PersonaName              string             `json:"persona_name"`
@@ -405,6 +408,7 @@ func (q *Queries) ListConversationsWithPersona(ctx context.Context, arg ListConv
 			&i.ScammerPeerRefCiphertext,
 			&i.ScammerPeerRefBidx,
 			&i.IdentifiersDekRef,
+			&i.ArchivedAt,
 			&i.PersonaID,
 			&i.Channel,
 			&i.PersonaName,

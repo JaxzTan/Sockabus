@@ -129,7 +129,7 @@ Table personas {
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
   profile jsonb [note: '000004: generator profile']
-  demo_identifiers jsonb [note: '000004: masked demo values; plaintext copy, NULL after pending 000015 drop_plaintext_identifiers']
+  demo_identifiers jsonb [note: '000004: masked demo values; plaintext copy, NULL after pending 000016 drop_plaintext_identifiers']
   demo_identifiers_ciphertext bytea [note: '000012: AES-GCM, AAD "persona_demo_ids:<id>"']
   demo_identifiers_dek_ref varchar(255) [note: '000012: key ref (local:v1). CHECK personas_demo_identifiers_dek_ref_ck: set iff ciphertext is']
 }
@@ -192,23 +192,24 @@ Table conversations {
   account_id bigint [not null, ref: > honeypot_accounts.id]
   playbook_id bigint [ref: > playbooks.id]
   temporal_workflow_id varchar(128) [not null, unique]
-  scammer_handle varchar(255) [note: 'Plaintext copy (nullable since 000012); NULL after pending 000015']
+  scammer_handle varchar(255) [note: 'Plaintext copy (nullable since 000012); NULL after pending 000016']
   scam_type scam_type [note: 'Null until classifier runs (TR-7)']
   stage varchar(32) [not null, default: 'rapport']
   status conversation_status [not null, default: 'bot']
   started_at timestamptz [not null]
   last_message_at timestamptz
   closed_at timestamptz
-  scammer_peer_ref varchar(255) [note: '000004: Telegram "tg:user:<id>:<access_hash>"; plaintext copy, NULL after pending 000015']
+  archived_at timestamptz [note: '000015: unused since the /archive page was removed (test chats are closed instead); safe to drop']
+  scammer_peer_ref varchar(255) [note: '000004: Telegram "tg:user:<id>:<access_hash>"; plaintext copy, NULL after pending 000016']
   scammer_handle_ciphertext bytea [note: '000012: AES-GCM, AAD "conv_handle:acct:<account_id>"']
   scammer_peer_ref_ciphertext bytea [note: '000012: AES-GCM, AAD "conv_peer_ref:acct:<account_id>"']
   scammer_peer_ref_bidx bytea [note: '000012: HMAC-SHA256 blind index, 32 bytes (CHECK octet_length = 32), key = HKDF(SOCKABUS_MESSAGE_KEY, "sockabus/blind-index/v1"). CHECK: set iff scammer_peer_ref_ciphertext is']
   identifiers_dek_ref varchar(255) [note: '000012: key ref of the two ciphertexts. CHECK: NOT NULL when either ciphertext is set']
   indexes {
-    (account_id, scammer_handle) [note: 'dropped by pending 000015']
+    (account_id, scammer_handle) [note: 'dropped by pending 000016']
     (status, last_message_at)
-    (account_id, scammer_peer_ref) [name: 'conversations_open_peer_idx', note: '000004. WHERE status <> closed. Dropped by pending 000015']
-    (account_id, scammer_peer_ref) [unique, name: 'conversations_open_peer_uq', note: '000006. WHERE status <> closed. Dropped by pending 000015']
+    (account_id, scammer_peer_ref) [name: 'conversations_open_peer_idx', note: '000004. WHERE status <> closed. Dropped by pending 000016']
+    (account_id, scammer_peer_ref) [unique, name: 'conversations_open_peer_uq', note: '000006. WHERE status <> closed. Dropped by pending 000016']
     (account_id, scammer_peer_ref_bidx) [unique, name: 'conversations_open_peer_bidx_uq', note: '000012. WHERE status <> closed AND scammer_peer_ref_bidx IS NOT NULL']
   }
 }

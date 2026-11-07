@@ -332,7 +332,7 @@ func (q *Queries) ListActiveConversationsWithLatestSummary(ctx context.Context, 
 }
 
 const listPersonaConversations = `-- name: ListPersonaConversations :many
-SELECT c.id, c.account_id, c.playbook_id, c.temporal_workflow_id, c.scammer_handle, c.scam_type, c.stage, c.status, c.started_at, c.last_message_at, c.closed_at, c.scammer_peer_ref, c.scammer_handle_ciphertext, c.scammer_peer_ref_ciphertext, c.scammer_peer_ref_bidx, c.identifiers_dek_ref FROM conversations c
+SELECT c.id, c.account_id, c.playbook_id, c.temporal_workflow_id, c.scammer_handle, c.scam_type, c.stage, c.status, c.started_at, c.last_message_at, c.closed_at, c.scammer_peer_ref, c.scammer_handle_ciphertext, c.scammer_peer_ref_ciphertext, c.scammer_peer_ref_bidx, c.identifiers_dek_ref, c.archived_at FROM conversations c
 JOIN honeypot_accounts a ON a.id = c.account_id
 WHERE a.persona_id = $1
 ORDER BY COALESCE(c.last_message_at, c.started_at) DESC
@@ -371,6 +371,7 @@ func (q *Queries) ListPersonaConversations(ctx context.Context, arg ListPersonaC
 			&i.ScammerPeerRefCiphertext,
 			&i.ScammerPeerRefBidx,
 			&i.IdentifiersDekRef,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}

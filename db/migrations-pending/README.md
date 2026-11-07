@@ -8,5 +8,5 @@ for a manual step; move it into `db/migrations` (keeping the next free version n
 |---|---|---|
 | `000015_drop_plaintext_identifiers` | 000012 applied, app on the dual-write build, `cmd/backfill-encrypt` run and `-verify` clean, then `SOCKABUS_IDENTIFIER_PLAINTEXT=0` and app restarted | Refuses to run if any row still lacks ciphertext; then NULLs `conversations.scammer_handle`, `conversations.scammer_peer_ref` and `personas.demo_identifiers`, adds CHECKs so plaintext cannot come back, and drops the plaintext indexes. |
 
-Renumber the file if `db/migrations` has meanwhile gained a 000015. Dropping the plaintext columns
+`db/migrations` now has 000015 (conversation archive): renumber this file to 000016 when you move it. Dropping the plaintext columns
 themselves needs a code change (sqlc `SELECT *` lists them), so it is a separate, later migration.
