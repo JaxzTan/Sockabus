@@ -107,7 +107,7 @@ export interface State {
 }
 
 const seed = (): Data => ({
-  personas: structuredClone(SEED_PERSONAS),
+  personas: structuredClone(SEED_PERSONAS).reverse(), // seed is newest-first; show oldest-first
   convos: structuredClone(SEED_CONVOS),
   entities: structuredClone(SEED_ENTITIES),
   pool: 0,
@@ -289,7 +289,7 @@ async function pull() {
     knownEntities = new Set(entities.map((e) => e.id));
     const genIds = get().data.genIds;
     set((s) => ({
-      data: { ...s.data, personas: personas.sort((a, b) => b.id - a.id).map((p) => toPersona(p, accounts, genIds)), convos: mapped, entities },
+      data: { ...s.data, personas: personas.sort((a, b) => a.id - b.id).map((p) => toPersona(p, accounts, genIds)), convos: mapped, entities },
       ui: { ...s.ui, loaded: true, loadError: null, lastSync: Date.now(), accounts, typing },
     }));
   } catch (err) {
@@ -359,7 +359,7 @@ export async function generatePersona(): Promise<string> {
         const pool = d.pool + 1;
         id = `p_${40 + pool}`;
         const handle = "@" + g.name.toLowerCase().replace(/[^a-z]/g, "").slice(0, 9) + g.age;
-        return { ...d, pool, personas: [{ id, ...g, status: "draft", handle, created: "just now", gen: true }, ...d.personas] };
+        return { ...d, pool, personas: [...d.personas, { id, ...g, status: "draft", handle, created: "just now", gen: true }] };
       });
       setUI({ generating: false });
       resolve(id);
