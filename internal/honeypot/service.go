@@ -36,6 +36,20 @@ type Config struct {
 	// personas.demo_identifiers in clear next to their ciphertext (000012 phase 1). Turn it off
 	// (SOCKABUS_IDENTIFIER_PLAINTEXT=0) before applying the pending drop_plaintext_identifiers migration.
 	PlaintextIdentifiers bool
+	// TelegramRepliesOff pauses every bot reply on Telegram accounts (SOCKABUS_TG_REPLIES=0).
+	TelegramRepliesOff bool
+	// PersonaTiming: env overrides of personas.profile "timing" (SOCKABUS_PERSONA_TIMING).
+	PersonaTiming map[string]workflows.PersonaTiming
+}
+
+// personaTiming is the persona's reply timing: profile "timing" with env overrides, then defaults.
+func (s *Service) personaTiming(p db.Persona) workflows.PersonaTiming {
+	return workflows.ResolvePersonaTiming(p.Profile, p.ID, p.Name, s.Cfg.PersonaTiming)
+}
+
+// repliesPaused reports whether bot replies on this account are switched off (SOCKABUS_TG_REPLIES=0).
+func (s *Service) repliesPaused(acct db.HoneypotAccount) bool {
+	return s.Cfg.TelegramRepliesOff && acct.Channel == db.ChannelTelegram
 }
 
 type Service struct {
@@ -107,7 +121,7 @@ func (s *Service) HandleInbound(ctx context.Context, in gateway.Inbound) error {
 	}
 	opts := client.StartWorkflowOptions{ID: conv.TemporalWorkflowID, TaskQueue: s.Cfg.TaskQueue}
 	input := workflows.ConversationInput{ConversationID: conv.ID, Timing: s.Cfg.Timing, Human: conv.Status == db.ConversationStatusHuman,
-		Persona: workflows.ParsePersonaTiming(p.Profile)}
+		Persona: s.personaTiming(p)}
 	if _, err := s.Temporal.SignalWithStartWorkflow(ctx, conv.TemporalWorkflowID, workflows.SignalInbound,
 		workflows.InboundSignal{MessageID: msg.ID}, opts, workflows.ConversationWorkflow, input); err != nil {
 		return fmt.Errorf("signal conversation workflow: %w", err)

@@ -165,7 +165,14 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 		log.Warn("SOCKABUS_REPLY_READ_MIN below the reply floor; replies still wait for the floor", "configured", timing.ReadMin, "floor", timing.MinDelay)
 	}
 	svc := honeypot.NewService(pool, box, personaLLM, extractLLM, tc, senders,
-		honeypot.Config{TaskQueue: cfg.TemporalTaskQueue, Timing: timing, PlaintextIdentifiers: l.PlaintextIdentifiers}, log)
+		honeypot.Config{TaskQueue: cfg.TemporalTaskQueue, Timing: timing, PlaintextIdentifiers: l.PlaintextIdentifiers,
+			TelegramRepliesOff: !l.TelegramReplies, PersonaTiming: l.PersonaTiming}, log)
+	if !l.TelegramReplies {
+		log.Warn("SOCKABUS_TG_REPLIES=0: Telegram personas will not reply (messages are still stored and extracted)")
+	}
+	if len(l.PersonaTiming) > 0 {
+		log.Info("persona timing overrides from SOCKABUS_PERSONA_TIMING", "personas", len(l.PersonaTiming))
+	}
 	svc.GenLLM, svc.SummaryLLM = genLLM, summaryLLM
 	var simHub *sim.Hub
 	if l.SimEnabled {

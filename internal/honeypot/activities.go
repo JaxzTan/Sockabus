@@ -238,7 +238,7 @@ func (a *Activities) setScamType(ctx context.Context, conv db.Conversation, pers
 // MarkRead shows the scammer's messages as read. Best effort: a failure must not delay the reply.
 func (a *Activities) MarkRead(ctx context.Context, in workflows.ConversationRef) error {
 	conv, acct, sender, err := a.target(ctx, in.ConversationID)
-	if err != nil {
+	if err != nil || a.S.repliesPaused(acct) {
 		return nil
 	}
 	if err := sender.MarkRead(ctx, acct.ID, conv.ScammerPeerRef.String); err != nil {
@@ -262,6 +262,10 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.GenerateRep
 	acct, err := s.Q.GetHoneypotAccount(ctx, conv.AccountID)
 	if err != nil {
 		return workflows.GenerateReplyResult{}, err
+	}
+	if s.repliesPaused(acct) {
+		s.Log.Info("telegram replies are off (SOCKABUS_TG_REPLIES=0): no reply generated", "conversation_id", conv.ID)
+		return workflows.GenerateReplyResult{Source: "none"}, nil
 	}
 	p, err := s.Q.GetPersona(ctx, acct.PersonaID)
 	if err != nil {
@@ -318,7 +322,7 @@ func (a *Activities) GenerateReply(ctx context.Context, in workflows.GenerateRep
 		}
 	}
 	system := persona.SystemPrompt(prof, sit)
-	typoRate := workflows.ParsePersonaTiming(p.Profile).TypoRate
+	typoRate := s.personaTiming(p).TypoRate
 
 	turns := make([]llm.Turn, 0, len(hist))
 	for _, m := range hist {
@@ -402,6 +406,9 @@ func (a *Activities) SimulateTyping(ctx context.Context, in workflows.SimulateTy
 	if err != nil {
 		return err
 	}
+	if a.S.repliesPaused(acct) {
+		return nil
+	}
 	peer := conv.ScammerPeerRef.String
 	if err := sender.SetOnline(ctx, acct.ID, true); err != nil {
 		a.S.Log.Warn("set online failed", "account_id", acct.ID, "err", err)
@@ -433,6 +440,9 @@ func (a *Activities) SendReply(ctx context.Context, in workflows.SendReplyInput)
 	}
 	if conv.Status != db.ConversationStatusBot {
 		return workflows.SendReplyResult{Sent: false, Reason: "conversation is " + string(conv.Status)}, nil
+	}
+	if a.S.repliesPaused(acct) {
+		return workflows.SendReplyResult{Sent: false, Reason: "telegram replies are off (SOCKABUS_TG_REPLIES=0)"}, nil
 	}
 	if err := sender.Send(ctx, acct.ID, conv.ScammerPeerRef.String, in.Text, in.RandomID); err != nil {
 		return workflows.SendReplyResult{}, err

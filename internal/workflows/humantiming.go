@@ -2,8 +2,10 @@ package workflows
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,7 +23,10 @@ import (
 
 // PersonaTiming is a persona's timing profile, stored in personas.profile under "timing":
 //
-//	"timing": {"wpm": 23, "sleep": [22, 6], "busyness": 0.2, "typo_rate": 0.12}
+//	"timing": {"wpm": 23, "sleep": [22, 6], "busyness": 0.2, "typo_rate": 0.12, "distracted": 0.22}
+//
+// SOCKABUS_PERSONA_TIMING overrides it per persona without touching the database
+// (ResolvePersonaTiming).
 //
 // Zero values take defaults (see WithDefaults).
 type PersonaTiming struct {
@@ -29,6 +34,8 @@ type PersonaTiming struct {
 	Sleep    []int   `json:"sleep,omitempty"`     // [startHour, endHour] Malaysia time; may wrap midnight
 	Busyness float64 `json:"busyness,omitempty"`  // 0–1: how long they take to notice a message when not chatting
 	TypoRate float64 `json:"typo_rate,omitempty"` // probability a bubble gets one adjacent-key typo
+	// Distracted is the chance they are pulled away (+~15 min) before noticing a message in a cold chat.
+	Distracted float64 `json:"distracted,omitempty"`
 }
 
 // Defaults for a persona without a "timing" profile.
@@ -36,12 +43,12 @@ const (
 	DefaultWPM      = 30
 	DefaultBusyness = 0.3
 	DefaultTypoRate = 0.05
-
-	activeWindow = 2 * time.Minute // a message within this of the last exchange is seen almost at once
 	// Chance the persona is pulled away (phone face down, cooking, driving) before noticing.
 	// The reference algorithm's 8% left too few replies past 5 min; 22% calibrates to ~69%.
-	distractedChance  = 0.22
-	abandonTypingRate = 0.5 // chance a new scammer message mid-typing makes the persona start over
+	DefaultDistracted = 0.22
+
+	activeWindow      = 2 * time.Minute // a message within this of the last exchange is seen almost at once
+	abandonTypingRate = 0.5             // chance a new scammer message mid-typing makes the persona start over
 )
 
 var defaultSleep = []int{23, 7}
@@ -66,17 +73,124 @@ func (p PersonaTiming) WithDefaults() PersonaTiming {
 	if p.TypoRate <= 0 || p.TypoRate > 1 {
 		p.TypoRate = DefaultTypoRate
 	}
+	if p.Distracted <= 0 || p.Distracted > 1 {
+		p.Distracted = DefaultDistracted
+	}
 	return p
 }
 
 // ParsePersonaTiming reads the "timing" key of a personas.profile document. Missing or malformed
 // values fall back to defaults.
 func ParsePersonaTiming(profile json.RawMessage) PersonaTiming {
+	return rawPersonaTiming(profile).WithDefaults()
+}
+
+func rawPersonaTiming(profile json.RawMessage) PersonaTiming {
 	var doc struct {
 		Timing PersonaTiming `json:"timing"`
 	}
 	_ = json.Unmarshal(profile, &doc)
-	return doc.Timing.WithDefaults()
+	return doc.Timing
+}
+
+// ResolvePersonaTiming is the persona's timing with env overrides (SOCKABUS_PERSONA_TIMING) on top
+// of personas.profile "timing", then defaults. An override is looked up by persona id, then by name
+// (case-insensitive), then "*" (all personas). Only the fields an override sets replace the profile's.
+func ResolvePersonaTiming(profile json.RawMessage, id int64, name string, overrides map[string]PersonaTiming) PersonaTiming {
+	t := rawPersonaTiming(profile)
+	for _, key := range []string{"*", strings.ToLower(strings.TrimSpace(name)), strconv.FormatInt(id, 10)} {
+		if o, ok := overrides[key]; ok {
+			t = t.overlay(o) // later keys are more specific and win
+		}
+	}
+	return t.WithDefaults()
+}
+
+func (p PersonaTiming) overlay(o PersonaTiming) PersonaTiming {
+	if o.WPM > 0 {
+		p.WPM = o.WPM
+	}
+	if o.Sleep != nil {
+		p.Sleep = o.Sleep
+	}
+	if o.Busyness > 0 {
+		p.Busyness = o.Busyness
+	}
+	if o.TypoRate > 0 {
+		p.TypoRate = o.TypoRate
+	}
+	if o.Distracted > 0 {
+		p.Distracted = o.Distracted
+	}
+	return p
+}
+
+// ParseTimingOverrides reads SOCKABUS_PERSONA_TIMING: personas separated by ";", each
+// "<persona id | name | *>:key=value,key=value". Keys: wpm, sleep (start-end hours in Malaysia
+// time, e.g. 22-6, or "off" = never asleep), busyness (0–1), typo (0–1), distracted (0–1).
+//
+//	Auntie Mei:wpm=23,sleep=22-6,busyness=0.2,typo=0.12;2:wpm=35,sleep=2-9
+func ParseTimingOverrides(s string) (map[string]PersonaTiming, error) {
+	out := map[string]PersonaTiming{}
+	for _, entry := range strings.Split(s, ";") {
+		if entry = strings.TrimSpace(entry); entry == "" {
+			continue
+		}
+		key, fields, ok := strings.Cut(entry, ":")
+		key = strings.ToLower(strings.TrimSpace(key))
+		if !ok || key == "" {
+			return nil, fmt.Errorf("%q: want <persona id or name>:key=value,...", entry)
+		}
+		var t PersonaTiming
+		for _, kv := range strings.Split(fields, ",") {
+			if kv = strings.TrimSpace(kv); kv == "" {
+				continue
+			}
+			k, v, ok := strings.Cut(kv, "=")
+			k, v = strings.ToLower(strings.TrimSpace(k)), strings.ToLower(strings.TrimSpace(v))
+			if !ok {
+				return nil, fmt.Errorf("%s: %q is not key=value", key, kv)
+			}
+			if k == "sleep" {
+				if v == "off" || v == "none" {
+					t.Sleep = []int{0, 0} // start == end: never asleep
+					continue
+				}
+				a, b, ok := strings.Cut(v, "-")
+				start, err1 := strconv.Atoi(strings.TrimSpace(a))
+				end, err2 := strconv.Atoi(strings.TrimSpace(b))
+				if !ok || err1 != nil || err2 != nil || start < 0 || start > 23 || end < 0 || end > 23 {
+					return nil, fmt.Errorf("%s: sleep=%q must be start-end hours 0-23 (e.g. 22-6) or off", key, v)
+				}
+				t.Sleep = []int{start, end}
+				continue
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil || f <= 0 {
+				return nil, fmt.Errorf("%s: %s=%q must be a number above 0", key, k, v)
+			}
+			switch k {
+			case "wpm":
+				t.WPM = f
+			case "busyness", "typo", "typo_rate", "distracted":
+				if f > 1 {
+					return nil, fmt.Errorf("%s: %s=%v must be between 0 and 1", key, k, f)
+				}
+				switch k {
+				case "busyness":
+					t.Busyness = f
+				case "distracted":
+					t.Distracted = f
+				default:
+					t.TypoRate = f
+				}
+			default:
+				return nil, fmt.Errorf("%s: unknown key %q (wpm, sleep, busyness, typo, distracted)", key, k)
+			}
+		}
+		out[key] = t
+	}
+	return out, nil
 }
 
 // lognormal returns median·e^(σz), z standard normal.
@@ -121,7 +235,7 @@ func (p PersonaTiming) NoticeDelay(r *rand.Rand, at time.Time, sinceExchange tim
 	} else {
 		n = lognormal(r, 45+120*p.Busyness, 1.3)
 	}
-	if r.Float64() < distractedChance {
+	if r.Float64() < p.Distracted {
 		n += lognormal(r, 900, 0.7)
 	}
 	return secs(n)

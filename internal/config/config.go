@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/JaxzTan/Buru_AI/internal/workflows"
 )
 
 type Config struct {
@@ -68,6 +70,13 @@ type Live struct {
 	// window, brb, typos). Default: on, unless the FR-3 floor is lowered (CI and tests), where
 	// the fixed READ_MIN/MAX, TYPING_WPM and BUBBLE_GAP timing above is used instead.
 	HumanTiming bool
+	// TelegramReplies off (SOCKABUS_TG_REPLIES=0) stops every Telegram persona from replying, marking
+	// read or showing "typing…": a kill switch while a reply bug is fixed. Inbound messages are still
+	// stored and extracted; operator messages still send. Default on.
+	TelegramReplies bool
+	// PersonaTiming overrides personas.profile "timing" per persona (SOCKABUS_PERSONA_TIMING),
+	// keyed by persona id, lower-case name or "*".
+	PersonaTiming map[string]workflows.PersonaTiming
 }
 
 func Load() (Config, error) {
@@ -190,6 +199,18 @@ func Load() (Config, error) {
 		l.HumanTiming = l.ReplyDelayMin >= 10*time.Second
 	default:
 		return c, fmt.Errorf("SOCKABUS_HUMAN_TIMING must be 1 or 0")
+	}
+
+	switch strings.ToLower(os.Getenv("SOCKABUS_TG_REPLIES")) {
+	case "", "1", "true", "on":
+		l.TelegramReplies = true
+	case "0", "false", "off":
+		l.TelegramReplies = false
+	default:
+		return c, fmt.Errorf("SOCKABUS_TG_REPLIES must be 1 or 0")
+	}
+	if l.PersonaTiming, err = workflows.ParseTimingOverrides(os.Getenv("SOCKABUS_PERSONA_TIMING")); err != nil {
+		return c, fmt.Errorf("SOCKABUS_PERSONA_TIMING: %w", err)
 	}
 
 	if len(l.OperatorToken) < 24 {
