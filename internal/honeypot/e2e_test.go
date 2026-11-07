@@ -252,6 +252,13 @@ func TestE2ETelegramHoneypotLoop(t *testing.T) {
 	if !res.Match || res.Status != "verified" || res.Confidence != "high" || len(res.ScamTypes) == 0 || res.ScamTypes[0] != "investment" {
 		t.Fatalf("lookup after verification = %+v", res)
 	}
+	if res.RiskScore < 0.85 || res.Reason != "ACCOUNT_SUPPLIED_BY_SCAMMER" || res.RecommendedAction != "HOLD_FOR_REVIEW" || res.Evidence != nil {
+		t.Fatalf("lookup risk fields = %+v (want hold, no evidence without WithEvidence)", res)
+	}
+	res, _ = svc.Lookup(ctx, LookupRequest{Type: "wallet", Value: addr, WithEvidence: true})
+	if res.Evidence == nil || res.Evidence.TranscriptRef != fmt.Sprintf("conv_%d", convID) || res.Evidence.Excerpt == "" {
+		t.Fatalf("lookup evidence = %+v", res.Evidence)
+	}
 
 	// 6. Hand back to the bot. The operator already answered message 2, so the bot stays quiet
 	// until the scammer writes again, then replies as the persona.

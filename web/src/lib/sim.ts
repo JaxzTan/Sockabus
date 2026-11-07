@@ -2,6 +2,7 @@
 // Real system: classification, extraction and persona replies run on the backend only (spec Area 6 swap list).
 import { digits } from "./format";
 import type { Conversation, Entity, EntityType, Lookup, ScamType } from "./types";
+import { assess } from "./risk";
 
 export function classify(text: string): ScamType | null {
   const t = text.toLowerCase();
@@ -57,6 +58,6 @@ export function lookup(entities: Entity[], bank: string, acct: string): Omit<Loo
   const d = digits(acct);
   const e = entities.find((x) => x.type === "bank_account" && x.bank === bank && x.value === d);
   if (!e || e.status === "rejected") return { result: "sent", entityId: null, res: { match: false }, ms: 18 };
-  const res = { match: true, confidence: e.conf, scam_types: [e.scam], first_seen: e.first, sightings: e.sightings };
+  const res = { match: true, confidence: e.conf, status: e.status, scam_types: [e.scam], first_seen: e.first, sightings: e.sightings, ...assess("bank_account", e.status, e.conf, e.sightings) };
   return { result: "held", entityId: e.id, res, ms: 41 };
 }
