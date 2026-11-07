@@ -53,10 +53,13 @@ export function storyResponse(flaggedAt: number): LookupResponse {
 // flagged and still under review (warning), one the bank already finished reviewing (blocked).
 export const DEMO_WARN_ACCOUNT = "000011112222";
 export const DEMO_BLOCKED_ACCOUNT = "000033334444";
+// A fake clean account: no scam record, so the transfer goes through.
+export const DEMO_CLEAN_ACCOUNT = "000055556666";
 
-// Scripted outcome for those two accounts, or null for any other account.
-export function fixedDemoOutcome(bank: string, acctDigits: string): { kind: "warn" | "blocked"; res: LookupResponse } | null {
+// Scripted outcome for those accounts, or null for any other account.
+export function fixedDemoOutcome(bank: string, acctDigits: string): { kind: "warn" | "blocked" | "sent"; res: LookupResponse } | null {
   if (bank !== STORY_BANK) return null;
+  if (acctDigits === DEMO_CLEAN_ACCOUNT) return { kind: "sent", res: { match: false } };
   const kind = acctDigits === DEMO_WARN_ACCOUNT ? "warn" : acctDigits === DEMO_BLOCKED_ACCOUNT ? "blocked" : null;
   if (!kind) return null;
   // Warning: flagged 12 minutes ago, unverified. Blocked: flagged 2 days ago, verified and reviewed.

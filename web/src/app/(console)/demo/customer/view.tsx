@@ -10,6 +10,7 @@ import { api, stamp, type ApiLookupResult } from "@/lib/api";
 import { acctKey, isBlocked, useBankDemo } from "@/lib/bankDemo";
 import {
   DEMO_BLOCKED_ACCOUNT,
+  DEMO_CLEAN_ACCOUNT,
   DEMO_WARN_ACCOUNT,
   fixedDemoOutcome,
   isStoryAccount,
@@ -24,7 +25,7 @@ import { lookup as sampleLookup } from "@/lib/sim";
 import { USE_SAMPLE, useStore } from "@/lib/store";
 import type { LookupResponse } from "@/lib/types";
 
-type Outcome = { kind: "blocked" | "warn" | "sent"; res: LookupResponse; bank: string; acct: string; amt: string; proceeded?: boolean };
+type Outcome = { kind: "blocked" | "warn" | "sent"; res: LookupResponse; bank: string; acct: string; amt: string; at: number; proceeded?: boolean };
 
 const bankName = (code: string) => (code === STORY_BANK ? STORY_BANK_NAME : (BANKS[code] ?? code));
 
@@ -49,7 +50,7 @@ export function CustomerView() {
     try {
       const fixed = fixedDemoOutcome(bank, d);
       if (fixed) {
-        setOut({ ...fixed, bank, acct: d, amt });
+        setOut({ ...fixed, bank, acct: d, amt, at: Date.now() });
         return;
       }
       let res: LookupResponse;
@@ -62,7 +63,7 @@ export function CustomerView() {
         res = (await api<ApiLookupResult>("/demo/lookup", { body: { bank, account: d } })).res;
       }
       const kind = !res.match ? "sent" : isBlocked(demo, acctKey(bank, d)) ? "blocked" : "warn";
-      setOut({ kind, res, bank, acct: d, amt });
+      setOut({ kind, res, bank, acct: d, amt, at: Date.now() });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -142,6 +143,9 @@ export function CustomerView() {
                 <button type="button" onClick={() => fill(DEMO_BLOCKED_ACCOUNT, "1200.00")} data-testid="cust-fill-blocked">
                   Demo: blocked
                 </button>
+                <button type="button" onClick={() => fill(DEMO_CLEAN_ACCOUNT, "350.00")} data-testid="cust-fill-success">
+                  Demo: success
+                </button>
               </div>
               {error && (
                 <p className="cust-err" role="alert">
@@ -159,7 +163,7 @@ export function CustomerView() {
               </button>
             </form>
           ) : (
-            <Result out={out} onBack={again} onProceed={() => setOut({ ...out, proceeded: true })} />
+            <Result out={out} onBack={again} onProceed={() => setOut({ ...out, proceeded: true, at: Date.now() })} />
           )}
         </section>
         <aside className="cust-note">
@@ -176,7 +180,7 @@ export function CustomerView() {
             </li>
           </ul>
           <p className="muted">
-            Quick fill: <i>Demo: warning</i> and <i>Demo: blocked</i> always show that screen (scripted fake accounts). <i>Story mule account</i> follows the bank simulator story: flagged after step 1, blocked after
+            Quick fill: <i>Demo: warning</i>, <i>Demo: blocked</i> and <i>Demo: success</i> always show that screen (scripted fake accounts). <i>Story mule account</i> follows the bank simulator story: flagged after step 1, blocked after
             the review. Review outcomes are kept in this browser only.
           </p>
         </aside>
@@ -231,8 +235,16 @@ function Result({ out, onBack, onProceed }: { out: Outcome; onBack: () => void; 
       <p>
         RM {out.amt} sent to <b className="mono">{to}</b>.
       </p>
+      <dl className="cust-receipt" data-testid="cust-receipt">
+        <dt>Reference</dt>
+        <dd className="mono">OB{String(out.at).slice(-8)}</dd>
+        <dt>Date</dt>
+        <dd>{stamp(new Date(out.at).toISOString())}</dd>
+        <dt>Status</dt>
+        <dd>Completed</dd>
+      </dl>
       {out.proceeded && <p className="muted">You continued after a scam warning.</p>}
-      <button className="btn btn-secondary" onClick={onBack}>
+      <button className="btn btn-secondary" onClick={onBack} data-testid="cust-new">
         New transfer
       </button>
     </div>

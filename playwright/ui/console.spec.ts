@@ -195,6 +195,11 @@ test("i. customer view: another bank's customer sees sent, then a warning, then 
     await page.getByTestId("cust-transfer").click();
     await expect(page.getByTestId("cust-blocked")).toContainText("Account blocked");
     await expect(page.getByTestId("cust-blocked")).toContainText("a job scam");
+    await page.getByTestId("cust-back").click();
+    await page.getByTestId("cust-fill-success").click();
+    await page.getByTestId("cust-transfer").click();
+    await expect(page.getByTestId("cust-sent")).toContainText("Transfer successful");
+    await expect(page.getByTestId("cust-receipt")).toContainText("Completed");
   });
 });
 

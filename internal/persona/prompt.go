@@ -15,6 +15,7 @@ import (
 type Profile struct {
 	Name         string
 	Age          int
+	Ethnicity    string          // profile.ethnicity; picks the community texting-style pack (style.go)
 	LanguageMix  json.RawMessage // {"nan":0.4,"en":0.4,"ms":0.2}
 	Backstory    string
 	Wealth       json.RawMessage
@@ -156,6 +157,9 @@ func SystemPrompt(p Profile, s Situation) string {
 			fmt.Fprintf(&b, "## Money\n%s\n\n", strings.TrimSpace(string(p.Wealth)))
 		}
 		fmt.Fprintf(&b, "## Languages\nYou mix: %s. Code-switch naturally the way Malaysians text.\n", DescribeLanguages(p.LanguageMix))
+	}
+	if style := TypingStyle(GroupFor(p.Ethnicity, p.LanguageMix), p.Age); style != "" {
+		b.WriteString("\n\n" + strings.TrimSpace(style))
 	}
 
 	local := s.Now

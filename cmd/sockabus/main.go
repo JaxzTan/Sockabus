@@ -128,6 +128,17 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 	if err != nil {
 		return err
 	}
+	// Persona generation keeps the main provider; SOCKABUS_PERSONA_PROVIDER swaps only chat replies.
+	baseGenLLM := personaLLM
+	if l.PersonaProvider != "" && l.PersonaProvider != l.LLMProvider {
+		if baseGenLLM, err = llm.New(llm.Config{Provider: l.LLMProvider, GeminiKey: l.GeminiAPIKey, AnthropicKey: l.AnthropicAPIKey, ThinkingLevel: l.PersonaThinking}); err != nil {
+			return err
+		}
+		if personaLLM, err = llm.New(llm.Config{Provider: l.PersonaProvider, Model: l.PersonaModel, GeminiKey: l.GeminiAPIKey, AnthropicKey: l.AnthropicAPIKey,
+			ThinkingLevel: l.PersonaThinking, OpenAIBaseURL: l.OpenAIBaseURL, OpenAIKey: l.OpenAIAPIKey}); err != nil {
+			return err
+		}
+	}
 	extractLLM, err := llm.New(llm.Config{Provider: l.LLMProvider, Model: l.ExtractModel, GeminiKey: l.GeminiAPIKey, AnthropicKey: l.AnthropicAPIKey, ThinkingLevel: "low"})
 	if err != nil {
 		return err
@@ -140,7 +151,9 @@ func wireLive(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, tc cli
 		log.Warn("no LLM key configured: personas will answer with playbook example lines only")
 	} else {
 		log.Info("persona LLM ready", "llm", personaLLM.Name(), "per_try_timeout", l.LLMTryTimeout, "generation_timeout", l.PersonaGenTimeout)
-		genLLM = llm.Retrying{Inner: personaLLM, Attempts: 2, PerTry: l.PersonaGenTimeout, Backoff: time.Second}
+		if baseGenLLM != nil {
+			genLLM = llm.Retrying{Inner: baseGenLLM, Attempts: 2, PerTry: l.PersonaGenTimeout, Backoff: time.Second}
+		}
 		// Retry stalled or briefly failing calls with a fresh short deadline (see llm.Retrying).
 		personaLLM = llm.Retrying{Inner: personaLLM, Attempts: 3, PerTry: l.LLMTryTimeout, Backoff: 500 * time.Millisecond}
 	}

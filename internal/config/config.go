@@ -39,6 +39,11 @@ type Live struct {
 	PersonaModel    string
 	ExtractModel    string
 	PersonaThinking string // gemini thinking level for persona replies: low | medium | high
+	// PersonaProvider overrides LLMProvider for chat replies only (e.g. "openai" for a Malaysian
+	// model); persona generation, extraction and summaries stay on LLMProvider.
+	PersonaProvider string
+	OpenAIBaseURL   string
+	OpenAIAPIKey    string
 
 	TelegramAppID      int
 	TelegramAppHash    string
@@ -111,6 +116,9 @@ func Load() (Config, error) {
 		PersonaModel:       os.Getenv("SOCKABUS_PERSONA_MODEL"),
 		ExtractModel:       os.Getenv("SOCKABUS_EXTRACT_MODEL"),
 		PersonaThinking:    getenv("SOCKABUS_PERSONA_THINKING", "low"),
+		PersonaProvider:    strings.ToLower(os.Getenv("SOCKABUS_PERSONA_PROVIDER")),
+		OpenAIBaseURL:      os.Getenv("SOCKABUS_OPENAI_BASE_URL"),
+		OpenAIAPIKey:       os.Getenv("SOCKABUS_OPENAI_API_KEY"),
 		TelegramAppHash:    os.Getenv("SOCKABUS_TG_APP_HASH"),
 		TelegramSessionDir: getenv("SOCKABUS_TG_SESSION_DIR", ".secrets/telegram"),
 		TelegramDevice:     os.Getenv("SOCKABUS_TG_DEVICE_MODEL"),

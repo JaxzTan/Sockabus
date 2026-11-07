@@ -541,3 +541,7 @@ tr.au-detail td { border-top: 0; background: var(--paper); padding-top: 4px; }
   main { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+.cust-receipt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 16px; margin: 4px 0 8px; padding: 12px; border: 1px solid var(--line, #ddd); border-radius: 8px; text-align: left; font-size: 14px; }
+.cust-receipt dt { color: var(--muted, #666); }
+.cust-receipt dd { margin: 0; overflow-wrap: anywhere; }
